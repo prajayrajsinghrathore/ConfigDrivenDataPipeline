@@ -1,0 +1,31 @@
+# =============================================================================
+# config/global_settings.yaml
+# =============================================================================
+# Global configurations that apply to all data sources
+
+default_settings:
+  retry_count: 3
+  timeout: 30
+  email_on_failure: true
+  email_on_retry: false
+  
+connections:
+  snowflake_default: "snowflake_default"
+  azure_data_lake: "azure_data_lake_default"
+  azure_blob: "azure_blob_default"
+
+notification:
+  email_on_success: false
+  email_on_failure: true
+  failure_recipients: ["prajayraj.rathore@rlam.co.uk"]
+  success_recipients: ["data-team@rlam.co.uk"]
+
+data_quality:
+  enable_validation: true
+  validation_failure_action: "fail"  # or "warn" or "skip"
+  data_profiling: true
+  
+audit:
+  track_lineage: true
+  log_transformations: true
+  retention_days: 90
