@@ -1,0 +1,28 @@
+# Schema for data enrichment configurations
+
+enrichment:
+  supported_types:
+    - reference_lookup
+    - calculated_field
+    - api_lookup
+    - file_lookup
+
+reference_lookup:
+  required_fields:
+    - type
+    - source_field
+    - lookup_table
+    - lookup_field
+    - target_fields
+  optional_fields:
+    - connection_id
+    - alias
+    - join_type
+
+calculated_field:
+  required_fields:
+    - type
+    - name
+    - formula
+  optional_fields:
+    - requires_aggregation

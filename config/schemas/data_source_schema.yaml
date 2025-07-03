@@ -1,0 +1,107 @@
+# This defines the structure and rules for YAML config files
+
+# Basic validation rules - can be extended without changing code
+required_fields:
+  - data_source
+  - destination
+
+data_source:
+  required_fields:
+    - name
+    - type
+    - endpoint  # for rest_api type
+  allowed_types:
+    - rest_api
+    - sftp
+  optional_fields:
+    - connection_id
+    - remote_path
+    - file_pattern
+    - file_format
+    - processing_mode
+    - authentication
+    - request_config
+
+authentication:
+  allowed_types:
+    - oauth
+    - bearer_token
+    - api_key
+    - none
+  optional_fields:
+    - credentials
+    - token_url
+    - client_id
+    - client_secret
+
+destination:
+  required_fields:
+    - primary
+  optional_fields:
+    - backup
+    - archive
+    - secondary
+    - summary
+    - post_processing
+
+destination_types:
+  allowed_types:
+    - snowflake_table
+    - azure_data_lake
+    - azure_blob
+    - local_file
+    - print_logs
+    - stored_procedure
+
+# Optional sections - these are allowed but not required
+optional_sections:
+  - validation_rules
+  - transformation
+  - enrichment
+  - schedule
+
+# Default values for missing fields
+defaults:
+  schedule:
+    interval: "@daily"
+    start_date: "2024-01-01"
+    catchup: false
+    tags: ["auto-generated"]
+  
+  destination:
+    primary:
+      type: "print_logs"
+      max_rows: 10
+  
+  authentication:
+    type: "none"
+
+# Validation rules for specific field types
+field_validation:
+  name:
+    type: string
+    max_length: 50
+    pattern: "^[a-zA-Z0-9_]+$"  # alphanumeric and underscore only
+  
+  interval:
+    type: string
+    allowed_values:
+      - "@once"
+      - "@hourly" 
+      - "@daily"
+      - "@weekly"
+      - "@monthly"
+      - "@yearly"
+    # Also allows cron expressions
+  
+  start_date:
+    type: string
+    pattern: "^\\d{4}-\\d{2}-\\d{2}$"  # YYYY-MM-DD format
+  
+  catchup:
+    type: boolean
+  
+  max_rows:
+    type: integer
+    min_value: 1
+    max_value: 1000

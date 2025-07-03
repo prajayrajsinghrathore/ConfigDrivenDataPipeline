@@ -1,0 +1,35 @@
+# Configuration for the validation process itself
+
+validation:
+  # Enable/disable validation
+  enabled: true
+  
+  # What to do when validation fails
+  on_failure: "warn"  # Options: "fail", "warn", "skip"
+  
+  # Whether to validate against schema files
+  use_schema_files: true
+  
+  # Schema file locations
+  schema_files:
+    data_source: "config/schemas/data_source_schema.yaml"
+    transformation: "config/schemas/transformation_schema.yaml"
+    enrichment: "config/schemas/enrichment_schema.yaml"
+  
+  # Log validation details
+  log_validation_details: true
+  
+  # Allow unknown fields (for flexibility)
+  allow_unknown_fields: true
+
+# Backward compatibility settings
+backward_compatibility:
+  # Support old field names
+  field_mappings:
+    schedule_interval: schedule.interval
+    start_date: schedule.start_date
+  
+  # Deprecated fields (log warnings but allow)
+  deprecated_fields:
+    - schedule_interval
+    - dag_id

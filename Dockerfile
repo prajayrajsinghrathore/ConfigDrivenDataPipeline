@@ -11,14 +11,17 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-USER airflow
+# Create necessary directories
+RUN mkdir -p /opt/airflow/config/schemas \
+    && mkdir -p /opt/airflow/config/data_sources \
+    && mkdir -p /tmp/airflow_output
 
+USER airflow
 
 # Copy and install requirements
 COPY requirements.txt /requirements.txt
 
 # Install extra Python packages
-
 RUN pip install -r /requirements.txt
 #RUN pip install --no-cache-dir -r /requirements.txt
 

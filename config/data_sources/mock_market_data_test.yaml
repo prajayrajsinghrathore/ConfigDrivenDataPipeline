@@ -1,0 +1,74 @@
+data_source:
+  name: "mock_market_data_test"
+  type: "rest_api"
+  endpoint: "https://jsonplaceholder.typicode.com/posts"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 15
+    retry_count: 3
+
+validation_rules:
+  - field: "id"
+    type: "numeric"
+    range: [1, 9999]
+    required: true
+  - field: "title"
+    type: "string"
+    max_length: 200
+    required: true
+  - field: "body"
+    type: "string"
+    required: true
+
+transformation:
+  column_types:
+    id: "int"
+    userId: "int"
+    title: "string"
+    body: "string"
+  
+  new_columns:
+    # Mock financial transformations
+    mock_price: "id * 10.5"  # Mock price calculation
+    mock_volume: "userId * 1000"  # Mock volume
+    title_upper: "title.str.upper()"
+    word_count: "body.str.split().str.len()"
+    price_category: "np.where(mock_price > 500, 'HIGH', 'LOW')"
+    processed_date: "pd.Timestamp.now().strftime('%Y-%m-%d')"
+  
+  filters:
+    mock_price: "> 100"  # Only high-value mock trades
+    word_count: "> 5"    # Only substantial content
+  
+  aggregations:
+    summary_stats:
+      group_by: ["userId"]
+      agg_functions:
+        avg_price: "mock_price.mean()"
+        total_volume: "mock_volume.sum()"
+        post_count: "id.count()"
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 15
+  
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "mock_market_data"
+    format: "csv"
+  
+  summary:
+    type: "local_file"
+    path: "/tmp/airflow_output/summaries"
+    filename: "market_data_summary"
+    format: "json"
+
+schedule:
+  interval: "*/15 * * * *"  # Every 15 minutes for testing
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["test", "mock_data", "market_simulation"]

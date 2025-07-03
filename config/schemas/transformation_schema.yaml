@@ -1,0 +1,50 @@
+# Schema for transformation configurations
+
+transformation:
+  optional_fields:
+    - column_types
+    - new_columns
+    - filters
+    - aggregations
+    - joins
+
+column_types:
+  allowed_types:
+    - string
+    - int
+    - float
+    - datetime
+    - boolean
+
+new_columns:
+  # Format: column_name: formula
+  # Formulas can include:
+  supported_operations:
+    - "field.str.upper()"         # Uppercase transformation
+    - "field.str.lower()"         # Lowercase transformation
+    - "pd.Timestamp.now()"        # Current timestamp
+    - "field1 * field2"           # Multiplication
+    - "field1 + field2"           # Addition
+    - "field1 + ' -- ' + field2"  # String concatenation
+    - "abs(field)"                # Absolute value
+    - "field.dt.year"             # Extract year from datetime
+
+filters:
+  # Format: field_name: condition
+  supported_conditions:
+    - "> value"     # Greater than
+    - "< value"     # Less than
+    - ">= value"    # Greater than or equal
+    - "<= value"    # Less than or equal
+    - "!= value"    # Not equal
+    - "== value"    # Equal
+
+aggregations:
+  supported_functions:
+    - sum
+    - mean
+    - count
+    - min
+    - max
+    - std
+    - median

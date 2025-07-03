@@ -1,0 +1,21 @@
+data_source:
+  name: "simple_test"
+  type: "rest_api"
+  endpoint: "https://api.github.com/users/octocat"
+  authentication:
+    type: "none"
+
+transformation:
+  new_columns:
+    name_upper: "name.str.upper() if 'name' in locals() else 'UNKNOWN'"
+    processed_at: "pd.Timestamp.now()"
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 5
+
+schedule:
+  interval: "0 */2 * * *"  # Every 2 hours
+  catchup: false
+  tags: ["simple_test"]

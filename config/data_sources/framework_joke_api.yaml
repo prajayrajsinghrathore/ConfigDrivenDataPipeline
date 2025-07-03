@@ -1,0 +1,23 @@
+data_source:
+  name: "framework_joke_api"
+  type: "rest_api"
+  endpoint: "https://official-joke-api.appspot.com/jokes/programming/random"
+  authentication:
+    type: "none"
+
+transformation:
+  new_columns:
+    setup_upper: "setup.str.upper()"
+    punchline_upper: "punchline.str.upper()"
+    full_joke: "setup_upper + ' -- ' + punchline_upper"
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 5
+
+schedule:
+  interval: "*/20 * * * *"
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["framework", "jokes", "test"]
