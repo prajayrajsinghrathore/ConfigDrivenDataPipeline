@@ -83,9 +83,9 @@ x-airflow-common:
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
     - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
+    #- ./logs:/opt/airflow/logs
     - ./config:/opt/airflow/config
-    - ./plugins:/opt/airflow/plugins
+    #- ./plugins:/opt/airflow/plugins
     # Development files for easy package management
     - ./requirements.txt:/requirements.txt
     # Kubernetes file
