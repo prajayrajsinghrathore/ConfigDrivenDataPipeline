@@ -85,7 +85,7 @@ def load_to_azure_blob(df, azure_conn_id, container, blob_name, file_format='par
 
 def load_to_snowflake(df, snowflake_conn_id, table_name, schema='PUBLIC', database=None, if_exists='append'):
     """
-    Load DataFrame to Snowflake table
+    Load DataFrame to Snowflake table using SQL INSERT statements
     
     Args:
         df: DataFrame to load
@@ -97,23 +97,83 @@ def load_to_snowflake(df, snowflake_conn_id, table_name, schema='PUBLIC', databa
     """
     hook = SnowflakeHook(snowflake_conn_id=snowflake_conn_id)
     
-    # Use pandas to_sql method with Snowflake connection
-    with hook.get_sqlalchemy_engine() as engine:
-        df.to_sql(
-            name=table_name,
-            con=engine,
-            schema=schema,
-            if_exists=if_exists,
-            index=False,
-            method='multi'
-        )
+    if len(df) == 0:
+        return "No data to load"
     
-    return f"Loaded {len(df)} rows to {schema}.{table_name}"
+    # Full table name
+    full_table_name = f"{schema}.{table_name}"
+    if database:
+        full_table_name = f"{database}.{full_table_name}"
+    
+    try:
+        # Create table if it doesn't exist (simple approach)
+        if if_exists == 'replace':
+            # Drop table if it exists
+            hook.run(f"DROP TABLE IF EXISTS {full_table_name}")
+        
+        # Get column names and create table SQL
+        columns = df.columns.tolist()
+        
+        # Create table with VARCHAR columns (simple approach)
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {full_table_name} (
+            {', '.join([f'"{col}" VARCHAR' for col in columns])}
+        )
+        """
+        hook.run(create_sql)
+        
+        # Insert data in batches
+        batch_size = 1000
+        total_rows = len(df)
+        
+        for i in range(0, total_rows, batch_size):
+            batch_df = df.iloc[i:i+batch_size]
+            
+            # Prepare INSERT statement
+            values_list = []
+            for _, row in batch_df.iterrows():
+                # Convert each value to string and escape quotes
+                row_values = []
+                for val in row:
+                    if pd.isna(val) or val is None:
+                        row_values.append('NULL')
+                    else:
+                        # Escape single quotes and wrap in quotes
+                        escaped_val = str(val).replace("'", "''")
+                        row_values.append(f"'{escaped_val}'")
+                values_list.append(f"({', '.join(row_values)})")
+            
+            # Build and execute INSERT statement
+            insert_sql = f"""
+            INSERT INTO {full_table_name} ({', '.join([f'"{col}"' for col in columns])})
+            VALUES {', '.join(values_list)}
+            """
+            
+            hook.run(insert_sql)
+        
+        return f"Loaded {total_rows} rows to {full_table_name}"
+        
+    except Exception as e:
+        # Fallback: use pandas to_sql with direct connection
+        try:
+            engine = hook.get_sqlalchemy_engine()
+            df.to_sql(
+                name=table_name,
+                con=engine,
+                schema=schema,
+                if_exists=if_exists,
+                index=False,
+                method='multi'
+            )
+            engine.dispose()
+            return f"Loaded {len(df)} rows to {schema}.{table_name} (fallback method)"
+        except Exception as e2:
+            raise Exception(f"Both methods failed. SQL method: {str(e)}, SQLAlchemy method: {str(e2)}")
 
 
 def load_to_snowflake_stage(df, snowflake_conn_id, stage_name, file_name, file_format='csv'):
     """
-    Load DataFrame to Snowflake stage
+    Load DataFrame to Snowflake stage using SQL
     
     Args:
         df: DataFrame to load
@@ -132,7 +192,20 @@ def load_to_snowflake_stage(df, snowflake_conn_id, stage_name, file_name, file_f
     else:
         raise ValueError(f"Unsupported format: {file_format}")
     
-    # Upload to stage
-    hook.run(f"PUT 'data:///{data}' @{stage_name}/{file_name}")
+    # Create a temporary file and upload to stage
+    import tempfile
+    import os
     
-    return f"Loaded to stage {stage_name}/{file_name}"
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=f'.{file_format}') as tmp_file:
+        tmp_file.write(data)
+        tmp_file_path = tmp_file.name
+    
+    try:
+        # Upload to stage using PUT command
+        put_sql = f"PUT file://{tmp_file_path} @{stage_name}/{file_name} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+        hook.run(put_sql)
+        
+        return f"Loaded to stage {stage_name}/{file_name}"
+    finally:
+        # Clean up temporary file
+        os.unlink(tmp_file_path)

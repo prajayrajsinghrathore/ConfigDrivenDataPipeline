@@ -1,0 +1,65 @@
+# File: config/data_sources/finnhub.yaml
+data_source:
+  name: "finnhub"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none" # No authentication needed for this API
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    max_length: 500
+    required: true
+  - field: "symbol"
+    type: "string"
+    max_length: 500
+    required: true
+  - field: "cik"
+    type: "string"
+    required: true
+
+transformation:
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+
+  new_columns:
+    setup_upper: "accessNumber.str.upper()"
+    processed_at: "pd.Timestamp.now()"
+
+  filters:
+    setup_length: "> 10" # Only jokes longer than 10 characters
+
+# No enrichment needed for this test
+enrichment: []
+
+destination:
+  primary:
+    type: "snowflake_table"
+    table: "METRICS.COMPANY_FILINGS"
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_file"
+    format: "csv"
+
+  archive:
+    type: "local_file"
+    path: "/tmp/airflow_output/archive"
+    filename: "finnhub_archive"
+    format: "json"
+
+schedule:
+  interval: "*/10 * * * *" # Every 10 minutes for testing
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["test", "finnhub_api", "development"]

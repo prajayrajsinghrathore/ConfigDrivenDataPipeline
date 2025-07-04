@@ -12,7 +12,7 @@ import logging
 
 from utils.data_fetchers import fetch_http_data, fetch_sftp_data
 from utils.data_transformers import transform_data, enrich_from_snowflake
-from utils.data_loaders import load_to_snowflake, load_to_azure_data_lake, load_to_azure_blob
+from utils.data_loaders import load_to_snowflake, load_to_snowflake_stage, load_to_azure_data_lake, load_to_azure_blob
 
 logger = logging.getLogger(__name__)
 
@@ -343,10 +343,20 @@ class GenericDataLoadOperator(BaseOperator):
             
             return load_to_snowflake(
                 df=df,
-                snowflake_conn_id='snowflake_default',
+                snowflake_conn_id='snowflake-default',
                 table_name=table.split('.')[-1],
                 schema=table.split('.')[-2] if '.' in table else 'PUBLIC',
                 if_exists=mode
+            )
+        
+        elif dest_type == 'snowflake_stage':
+            mode = dest_config.get('mode', 'append')
+            
+            return load_to_snowflake_stage(
+                df=df,
+                snowflake_conn_id='snowflake-default',
+                stage_name='FINNHUB_STAGE',
+                file_name='finnhub_test_file.csv'
             )
         
         elif dest_type == 'azure_data_lake':

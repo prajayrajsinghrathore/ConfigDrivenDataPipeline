@@ -8,9 +8,9 @@ default_settings:
   timeout: 30
   email_on_failure: true
   email_on_retry: false
-  
+
 connections:
-  snowflake_default: "snowflake_default"
+  snowflake_default: "snowflake-default"
   azure_data_lake: "azure_data_lake_default"
   azure_blob: "azure_blob_default"
 
@@ -22,9 +22,9 @@ notification:
 
 data_quality:
   enable_validation: true
-  validation_failure_action: "fail"  # or "warn" or "skip"
+  validation_failure_action: "fail" # or "warn" or "skip"
   data_profiling: true
-  
+
 audit:
   track_lineage: true
   log_transformations: true
