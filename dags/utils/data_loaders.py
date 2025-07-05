@@ -196,13 +196,20 @@ def load_to_snowflake_stage(df, snowflake_conn_id, stage_name, file_name, file_f
     import tempfile
     import os
     
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=f'.{file_format}') as tmp_file:
+    date_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name, ext = os.path.splitext(file_name)
+    dated_file_name = f"{base_name}_{date_suffix}{ext}"
+
+    temp_dir = tempfile.gettempdir()
+    tmp_file_path = os.path.join(temp_dir, dated_file_name)
+
+    with open(tmp_file_path, 'w') as tmp_file:
         tmp_file.write(data)
         tmp_file_path = tmp_file.name
     
     try:
         # Upload to stage using PUT command
-        put_sql = f"PUT file://{tmp_file_path} @{stage_name}/{file_name} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+        put_sql = f"PUT file://{tmp_file_path} @{stage_name}/FINNHUB AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
         hook.run(put_sql)
         
         return f"Loaded to stage {stage_name}/{file_name}"
