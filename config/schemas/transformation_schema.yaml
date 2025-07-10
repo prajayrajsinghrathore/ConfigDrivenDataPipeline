@@ -1,4 +1,4 @@
-# Schema for transformation configurations
+# Transformation_schema.yaml with external file support
 
 transformation:
   optional_fields:
@@ -7,7 +7,9 @@ transformation:
     - filters
     - aggregations
     - joins
+    - external_transforms  # New field for external transformations
 
+# Existing transformation types
 column_types:
   allowed_types:
     - string
@@ -17,27 +19,24 @@ column_types:
     - boolean
 
 new_columns:
-  # Format: column_name: formula
-  # Formulas can include:
   supported_operations:
-    - "field.str.upper()"         # Uppercase transformation
-    - "field.str.lower()"         # Lowercase transformation
-    - "pd.Timestamp.now()"        # Current timestamp
-    - "field1 * field2"           # Multiplication
-    - "field1 + field2"           # Addition
-    - "field1 + ' -- ' + field2"  # String concatenation
-    - "abs(field)"                # Absolute value
-    - "field.dt.year"             # Extract year from datetime
+    - "field.str.upper()"
+    - "field.str.lower()"
+    - "pd.Timestamp.now()"
+    - "field1 * field2"
+    - "field1 + field2"
+    - "field1 + ' -- ' + field2"
+    - "abs(field)"
+    - "field.dt.year"
 
 filters:
-  # Format: field_name: condition
   supported_conditions:
-    - "> value"     # Greater than
-    - "< value"     # Less than
-    - ">= value"    # Greater than or equal
-    - "<= value"    # Less than or equal
-    - "!= value"    # Not equal
-    - "== value"    # Equal
+    - "> value"
+    - "< value"
+    - ">= value"
+    - "<= value"
+    - "!= value"
+    - "== value"
 
 aggregations:
   supported_functions:
@@ -48,3 +47,32 @@ aggregations:
     - max
     - std
     - median
+
+# New external transformation configuration
+external_transforms:
+  supported_types:
+    - python_file
+    - beam_yaml
+    - custom_function
+  
+  python_file:
+    required_fields:
+      - file_path
+      - function_name
+    optional_fields:
+      - parameters
+      - imports
+      - dependencies
+  
+  beam_yaml:
+    required_fields:
+      - yaml_config
+    optional_fields:
+      - parameters
+  
+  custom_function:
+    required_fields:
+      - function_code
+    optional_fields:
+      - parameters
+      - imports

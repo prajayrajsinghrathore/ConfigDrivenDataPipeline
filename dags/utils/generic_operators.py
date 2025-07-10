@@ -1,6 +1,6 @@
 # File: dags/utils/generic_operators.py
 """
-Generic operators that can handle any data source type
+Generic operators with external transformation support
 """
 
 import pandas as pd
@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 import logging
 
 from utils.data_fetchers import fetch_http_data, fetch_sftp_data
-from utils.data_transformers import transform_data, enrich_from_snowflake
+from dags.utils.data_transformers import transform_data, enrich_from_snowflake
 from utils.data_loaders import load_to_snowflake, load_to_snowflake_stage, load_to_azure_data_lake, load_to_azure_blob
 from utils.kafka_publisher import kafka_publisher
 from datetime import datetime, timezone
@@ -37,47 +37,64 @@ class GenericDataIngestionOperator(BaseOperator):
         
         source_type = self.data_source_config['type']
         
-        topic="default_topic_ingestion"
-        event = self.config['event']
+        topic = "default_topic_ingestion"
+        event = self.config.get('event', {})
         if not event or 'topic' not in event or event['topic'] is None:
             topic = 'no_topic_ingestion'
         else:
             topic = event['topic'] + '_ingestion'
 
         df = None
-        if source_type == 'rest_api':
-            df = self._fetch_from_api()
-        elif source_type == 'sftp':
-            df = self._fetch_from_sftp()
-        else:
-            _ = kafka_publisher.publish_pipeline_event(
+        try:
+            if source_type == 'rest_api':
+                df = self._fetch_from_api()
+            elif source_type == 'sftp':
+                df = self._fetch_from_sftp()
+            else:
+                raise ValueError(f"Unsupported source type: {source_type}")
+            
+            if df is None or df.empty:
+                logger.warning(f"No data fetched from {source_type}. Returning empty DataFrame.")
+                return pd.DataFrame()
+            
+            # Add ingestion metadata
+            df['ingestion_timestamp'] = datetime.now(timezone.utc)
+            df['ingestion_source'] = source_type
+            df['dag_id'] = context['dag'].dag_id
+            df['task_id'] = context['task'].task_id
+            
+            # Publish success event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type=source_type,
+                status='success',
+                message=f"Data ingestion from {source_type} completed successfully. Records: {len(df)}",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic
+            )
+            if not publish_pipeline_event:
+                logger.error("Failed to publish data ingestion event to Kafka")
+            
+            logger.info(f"Successfully ingested {len(df)} records from {source_type}")
+            return df
+            
+        except Exception as e:
+            # Publish failure event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
                 dag_id=context['dag'].dag_id,
                 task_id=context['task'].task_id,
                 event_type=source_type,
                 status='failure',
-                message=f"Data ingestion failed. Unsupported {source_type}.",
+                message=f"Data ingestion failed. Error: {str(e)}",
                 execution_date=datetime.now(timezone.utc),
                 topic=topic
             )
-            raise ValueError(f"Unsupported source type: {source_type}")
-        
-        if df is None or df.empty:
-            logger.warning(f"No data fetched from {source_type}. Returning empty DataFrame.")
-            return pd.DataFrame()
-        
-        publish_pipline_event = kafka_publisher.publish_pipeline_event(
-            dag_id=context['dag'].dag_id,
-            task_id=context['task'].task_id,
-            event_type=source_type,
-            status='success',
-            message=f"Data ingestion from {source_type} completed successfully",
-            execution_date=datetime.now(timezone.utc),
-            topic=topic
-        )
-        if not publish_pipline_event:
-            logger.error("Failed to publish data ingestion event to Kafka")
-        
-        return df
+            if not publish_pipeline_event:
+                logger.error("Failed to publish data ingestion failure event to Kafka")
+            
+            logger.error(f"Data ingestion failed: {str(e)}")
+            raise
 
     def _fetch_from_api(self) -> pd.DataFrame:
         """Fetch data from REST API"""
@@ -87,10 +104,7 @@ class GenericDataIngestionOperator(BaseOperator):
         # Extract API key from authentication config
         api_key = None
         if auth_config.get('type') in ['bearer_token', 'api_key']:
-            # In production, you'd get this from Airflow Variables or Connections
             api_key = auth_config.get('credentials')
-        
-        # For 'none' or 'oauth' types, api_key remains None
         
         # Get request configuration
         request_config = self.data_source_config.get('request_config', {})
@@ -127,9 +141,10 @@ class GenericDataIngestionOperator(BaseOperator):
         logger.info(f"Fetched {len(df)} rows from SFTP")
         return df
 
+
 class GenericDataTransformationOperator(BaseOperator):
     """
-    Generic operator that applies transformations based on configuration
+    Generic operator that applies transformations with external file support
     """
     
     def __init__(
@@ -148,40 +163,53 @@ class GenericDataTransformationOperator(BaseOperator):
         
         # Get data from previous task if not provided
         if self.input_data is None:
-            # Pull data from previous task using XCom
             self.input_data = context['task_instance'].xcom_pull(task_ids='ingest_data')
         
         if self.input_data is None or (isinstance(self.input_data, list) and len(self.input_data) == 0):
             logger.warning("No input data provided for transformation. Returning empty DataFrame.")
+            return []
         
-        df = self.input_data.copy()
+        # Convert to DataFrame if needed
+        if isinstance(self.input_data, list):
+            df = pd.DataFrame(self.input_data)
+        else:
+            df = self.input_data.copy()
         
-        topic="default_topic_transformation"
-        event = self.config['event']
+        topic = "default_topic_transformation"
+        event = self.config.get('event', {})
         if not event or 'topic' not in event or event['topic'] is None:
             topic = 'no_topic_transformation'
         else:
-            topic = event['topic']+ '_transformation'
+            topic = event['topic'] + '_transformation'
 
         try:
-            # Apply validation
+            logger.info(f"Starting transformation on {len(df)} records")
+            
+            # Apply validation rules
             if 'validation_rules' in self.config:
                 df = self._apply_validation(df)
+                logger.info(f"After validation: {len(df)} records")
             
-            # Apply transformations
+            # Apply transformations (including external transforms)
             if 'transformation' in self.config:
-                df = self._apply_transformations(df)
+                df = transform_data(df, self.config['transformation'])
+                logger.info(f"After transformation: {len(df)} records")
             
             # Apply enrichment
             if 'enrichment' in self.config:
                 df = self._apply_enrichment(df)
+                logger.info(f"After enrichment: {len(df)} records")
+            
+            # Add transformation metadata
+            df['transformation_timestamp'] = datetime.now(timezone.utc)
+            df['transformation_version'] = self.config.get('transformation', {}).get('version', '1.0')
+            df['dag_run_id'] = context['dag_run'].run_id
             
             logger.info(f"Transformation complete. Result: {len(df)} rows")
             
             # Convert to JSON-serializable format for XCom
-            result= []
+            result = []
             if len(df) > 0:
-                # Convert DataFrame to list of dicts with safe serialization
                 for _, row in df.iterrows():
                     record = {}
                     for col in df.columns:
@@ -191,42 +219,46 @@ class GenericDataTransformationOperator(BaseOperator):
                         elif isinstance(value, (list, dict)):
                             record[col] = value
                         else:
-                            record[col] = str(value)  # Convert everything else to string for safety
+                            record[col] = str(value)
                     result.append(record)
             
-            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+            # Publish success event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
                 dag_id=context['dag'].dag_id,
                 task_id=context['task'].task_id,
-                event_type='task_success',
+                event_type='transformation',
                 status='success',
-                message=f"Data Trasformation task completed successfully",
+                message=f"Transformation completed successfully. Records: {len(result)}",
                 execution_date=datetime.now(timezone.utc),
                 topic=topic
             )
-            if not publish_pipline_event:
-                logger.error("Failed to publish data ingestion event to Kafka")
+            if not publish_pipeline_event:
+                logger.error("Failed to publish transformation success event to Kafka")
 
             return result
+            
         except Exception as e:
-            # KAFKA EVENT: Publish failed data transformation event
-            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+            # Publish failure event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
                 dag_id=context['dag'].dag_id,
                 task_id=context['task'].task_id,
-                event_type='task_failure',
+                event_type='transformation',
                 status='failure',
-                message=f"Data Transformation task failed: {str(e)}",
+                message=f"Transformation failed: {str(e)}",
                 execution_date=datetime.now(timezone.utc),
                 topic=topic
             )
-            if not publish_pipline_event:
-                logger.error("Failed to publish data transformation failure event to Kafka")
+            if not publish_pipeline_event:
+                logger.error("Failed to publish transformation failure event to Kafka")
             
-            logger.error(f"Data Transformation failed: {str(e)}")
+            logger.error(f"Transformation failed: {str(e)}")
             raise
     
     def _apply_validation(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply validation rules from configuration"""
         validation_rules = self.config['validation_rules']
+        
+        initial_count = len(df)
         
         for rule in validation_rules:
             field = rule['field']
@@ -249,98 +281,24 @@ class GenericDataTransformationOperator(BaseOperator):
             elif rule_type == 'datetime':
                 # Convert to datetime if not already
                 if not pd.api.types.is_datetime64_any_dtype(df[field]):
-                    df[field] = pd.to_datetime(df[field])
+                    df[field] = pd.to_datetime(df[field], errors='coerce')
+                # Remove rows with invalid dates
+                df = df[df[field].notna()]
             
             elif rule_type == 'string':
                 if 'max_length' in rule:
                     max_len = rule['max_length']
                     df = df[df[field].str.len() <= max_len]
+                
+                # Remove null values if required
+                if rule.get('required', False):
+                    df = df[df[field].notna()]
+        
+        validation_removed = initial_count - len(df)
+        if validation_removed > 0:
+            logger.info(f"Validation removed {validation_removed} records")
         
         return df
-    
-    def _apply_transformations(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply transformations from configuration"""
-        transformation_config = self.config['transformation']
-        
-        # Use a simpler approach to avoid pandas serialization issues
-        result_data = []
-        
-        for _, row in df.iterrows():
-            # Convert row to dict
-            record = row.to_dict()
-            
-            # Apply column type changes
-            if 'column_types' in transformation_config:
-                for col, dtype in transformation_config['column_types'].items():
-                    if col in record:
-                        try:
-                            if dtype == 'datetime':
-                                record[col] = pd.to_datetime(record[col]).strftime('%Y-%m-%d %H:%M:%S')
-                            elif dtype == 'float':
-                                record[col] = float(record[col])
-                            elif dtype == 'int':
-                                record[col] = int(record[col])
-                            else:
-                                record[col] = str(record[col])
-                        except:
-                            record[col] = str(record[col])
-            
-            # Apply new columns
-            if 'new_columns' in transformation_config:
-                for col_name, formula in transformation_config['new_columns'].items():
-                    try:
-                        if '.str.upper()' in formula:
-                            source_field = formula.split('.')[0]
-                            if source_field in record:
-                                record[col_name] = str(record[source_field]).upper()
-                            else:
-                                record[col_name] = 'UNKNOWN'
-                        elif 'pd.Timestamp.now()' in formula:
-                            record[col_name] = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-                        elif ' * ' in formula:
-                            # Handle multiplication like "quantity * price"
-                            parts = formula.split(' * ')
-                            if len(parts) == 2 and parts[0].strip() in record and parts[1].strip() in record:
-                                val1 = float(record[parts[0].strip()] or 0)
-                                val2 = float(record[parts[1].strip()] or 0)
-                                record[col_name] = val1 * val2
-                            else:
-                                record[col_name] = str(formula)
-                        else:
-                            record[col_name] = str(formula)
-                    except Exception as e:
-                        logger.warning(f"Error creating column {col_name}: {e}")
-                        record[col_name] = f"ERROR: {str(e)}"
-            
-            # Apply filters
-            include_record = True
-            if 'filters' in transformation_config:
-                for col, condition in transformation_config['filters'].items():
-                    if col in record:
-                        try:
-                            value = float(record[col])
-                            if '>' in condition:
-                                threshold = float(condition.replace('>', '').strip())
-                                if not (value > threshold):
-                                    include_record = False
-                                    break
-                            elif '<' in condition:
-                                threshold = float(condition.replace('<', '').strip())
-                                if not (value < threshold):
-                                    include_record = False
-                                    break
-                            elif '!=' in condition:
-                                threshold = float(condition.replace('!=', '').strip())
-                                if not (value != threshold):
-                                    include_record = False
-                                    break
-                        except:
-                            pass  # Skip filter if can't parse
-            
-            if include_record:
-                result_data.append(record)
-        
-        return pd.DataFrame(result_data) if result_data else pd.DataFrame()
     
     def _apply_enrichment(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply enrichment from configuration"""
@@ -354,14 +312,15 @@ class GenericDataTransformationOperator(BaseOperator):
                     'select_columns': enrichment['target_fields']
                 }
                 
-                # Use default Snowflake connection
-                df = enrich_from_snowflake(df, 'snowflake_default', lookup_config)
+                logger.info(f"Applying reference lookup from {enrichment['lookup_table']}")
+                df = enrich_from_snowflake(df, 'snowflake-default', lookup_config)
         
         return df
 
+
 class GenericDataLoadOperator(BaseOperator):
     """
-    Generic operator that loads data to configured destinations
+    Generic operator that loads data with improved monitoring
     """
     
     def __init__(
@@ -387,16 +346,26 @@ class GenericDataLoadOperator(BaseOperator):
             df = pd.DataFrame(self.input_data)
         else:
             df = self.input_data
+            
+        if df is None or len(df) == 0:
+            logger.warning("No data to load")
+            return "No data to load"
+        
         destination_config = self.config['destination']
 
-        topic="default_topic"
-        event = self.config['event']
+        topic = "default_topic"
+        event = self.config.get('event', {})
         if not event or 'topic' not in event or event['topic'] is None:
             topic = 'no_topic'
         else:
             topic = event['topic']
         
         results = []
+        
+        # Add load metadata
+        df['load_timestamp'] = datetime.now(timezone.utc)
+        df['load_batch_id'] = f"batch_{context['dag_run'].run_id}_{context['task'].task_id}"
+        df['record_count'] = len(df)
         
         # Load to primary destination
         if 'primary' in destination_config:
@@ -405,7 +374,7 @@ class GenericDataLoadOperator(BaseOperator):
         
         # Load to backup destination
         if 'backup' in destination_config:
-            result = self._load_to_destination(df, destination_config['backup'], topic,  context, 'backup')
+            result = self._load_to_destination(df, destination_config['backup'], topic, context, 'backup')
             results.append(f"Backup: {result}")
         
         # Load to archive destination
@@ -413,18 +382,21 @@ class GenericDataLoadOperator(BaseOperator):
             result = self._load_to_destination(df, destination_config['archive'], topic, context, 'archive')
             results.append(f"Archive: {result}")
         
-        
-        return " | ".join(results)
+        final_result = " | ".join(results)
+        logger.info(f"Data loading completed: {final_result}")
+        return final_result
     
-    def _load_to_destination(self, df: pd.DataFrame, dest_config: Dict[str, Any], topic: str, context: Context, dest_type_label: str) -> str:
-        """Load data to a specific destination"""
+    def _load_to_destination(self, df: pd.DataFrame, dest_config: Dict[str, Any], 
+                           topic: str, context: Context, dest_type_label: str) -> str:
+        """Load data to a specific destination with monitoring"""
         dest_type = dest_config['type']
         dag_id = context['dag'].dag_id
         task_id = context['task'].task_id
 
         try:
             result_message = ""
-                                                
+            load_start_time = datetime.now()
+            
             if dest_type == 'snowflake_table':
                 table = dest_config['table']
                 mode = dest_config.get('mode', 'append')
@@ -438,8 +410,6 @@ class GenericDataLoadOperator(BaseOperator):
                 )
         
             elif dest_type == 'snowflake_stage':
-                mode = dest_config.get('mode', 'append')
-                
                 result_message = load_to_snowflake_stage(
                     df=df,
                     snowflake_conn_id='snowflake-default',
@@ -482,15 +452,10 @@ class GenericDataLoadOperator(BaseOperator):
             else:
                 raise ValueError(f"Unsupported destination type: {dest_type}")
             
-            # Calculate data size estimate
-            # data_size_bytes = None
-            # try:
-            #     # Rough estimate: average of 50 bytes per cell
-            #     data_size_bytes = len(df) * len(df.columns) * 50 if len(df) > 0 else 0
-            # except:
-            #     pass
+            # Calculate load metrics
+            load_duration = (datetime.now() - load_start_time).total_seconds()
             
-            # KAFKA EVENT: Publish successful data load event to Market Data topic
+            # Publish data to Kafka
             event_publish_status = kafka_publisher.publish_data(
                 dag_id=dag_id,
                 data=df.to_dict(orient='records'),
@@ -498,43 +463,44 @@ class GenericDataLoadOperator(BaseOperator):
                 status='success'
             )
             if not event_publish_status:
-                logger.error("Failed to publish data load event to Kafka")
+                logger.error("Failed to publish data to Kafka")
                 
-            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+            # Publish pipeline event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
                 dag_id=context['dag'].dag_id,
                 task_id=context['task'].task_id,
-                event_type='task_success',
+                event_type='data_load',
                 status='success',
-                message=f"Data has been loaded successfully",
+                message=f"Data loaded successfully to {dest_type}. Records: {len(df)}, Duration: {load_duration:.2f}s",
                 execution_date=datetime.now(timezone.utc),
                 topic=topic + "_load"
             )
-            if not publish_pipline_event:
-                logger.error("Failed to publish data ingestion event to Kafka")
+            if not publish_pipeline_event:
+                logger.error("Failed to publish load success event to Kafka")
         
-            logger.info(f"Published data load event to Kafka.")
+            logger.info(f"Successfully loaded {len(df)} records to {dest_type_label} destination")
             
-            return result_message
+            return f"{result_message} (Duration: {load_duration:.2f}s)"
             
         except Exception as e:
-            # 🎯 KAFKA EVENT: Publish failed data load event
-            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+            # Publish failure event
+            publish_pipeline_event = kafka_publisher.publish_pipeline_event(
                 dag_id=context['dag'].dag_id,
                 task_id=context['task'].task_id,
-                event_type='task_success',
-                status='success',
-                message=f"{str(e) if e else ''}",
+                event_type='data_load',
+                status='failure',
+                message=f"Data load failed for {dest_type}: {str(e)}",
                 execution_date=datetime.now(timezone.utc),
                 topic=topic + "_load"
             )
-            if not publish_pipline_event:
-                logger.error("Failed to publish data load failure event to Kafka")
+            if not publish_pipeline_event:
+                logger.error("Failed to publish load failure event to Kafka")
     
-            logger.error(f"Published failed data load event to Kafka for {dest_type_label} destination: {dest_type}")            
+            logger.error(f"Failed to load data to {dest_type_label} destination: {dest_type}")            
             raise
 
     def _load_to_local_file(self, df: pd.DataFrame, dest_config: Dict[str, Any]) -> str:
-        """Save DataFrame to local temporary file"""
+        """Save DataFrame to local file with metadata"""
         import os
         from datetime import datetime
         
@@ -549,26 +515,44 @@ class GenericDataLoadOperator(BaseOperator):
         
         filepath = os.path.join(temp_dir, f"{filename}_{timestamp}.{file_format}")
         
+        # Add file metadata to DataFrame
+        df_with_metadata = df.copy()
+        df_with_metadata['file_export_timestamp'] = datetime.now()
+        df_with_metadata['export_format'] = file_format
+        df_with_metadata['export_path'] = filepath
+        
         # Save file based on format
         if file_format == 'csv':
-            df.to_csv(filepath, index=False)
+            df_with_metadata.to_csv(filepath, index=False)
         elif file_format == 'json':
-            df.to_json(filepath, orient='records', indent=2)
+            df_with_metadata.to_json(filepath, orient='records', indent=2)
         elif file_format == 'parquet':
-            df.to_parquet(filepath, index=False)
+            df_with_metadata.to_parquet(filepath, index=False)
         else:
             raise ValueError(f"Unsupported file format: {file_format}")
         
-        logger.info(f"Saved {len(df)} rows to {filepath}")
-        return f"Saved to {filepath}"
+        # Get file size
+        file_size = os.path.getsize(filepath)
+        
+        logger.info(f"Saved {len(df)} rows to {filepath} ({file_size} bytes)")
+        return f"Saved to {filepath} ({file_size} bytes)"
     
     def _load_to_logs(self, df: pd.DataFrame, dest_config: Dict[str, Any]) -> str:
-        """Print DataFrame to logs"""
+        """Print DataFrame to logs with formatting"""
         max_rows = dest_config.get('max_rows', 10)
         
         logger.info(f"=== DATA OUTPUT ({len(df)} total rows) ===")
-        logger.info(f"Columns: {list(df.columns)}")
+        logger.info(f"Columns ({len(df.columns)}): {list(df.columns)}")
         logger.info(f"Data types:\n{df.dtypes}")
+        
+        # Show data quality summary
+        quality_summary = {
+            'total_records': len(df),
+            'null_counts': df.isnull().sum().to_dict(),
+            'memory_usage': f"{df.memory_usage(deep=True).sum() / 1024:.2f} KB"
+        }
+        logger.info(f"Data Quality Summary: {quality_summary}")
+        
         logger.info(f"First {max_rows} rows:")
         logger.info(f"\n{df.head(max_rows).to_string()}")
         
@@ -577,5 +561,4 @@ class GenericDataLoadOperator(BaseOperator):
         
         logger.info("=== END DATA OUTPUT ===")
         
-        return f"Printed {len(df)} rows to logs"
-    
+        return f"Printed {len(df)} rows to logs with formatting"

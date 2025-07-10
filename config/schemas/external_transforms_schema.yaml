@@ -1,0 +1,311 @@
+# File: config/schemas/external_transforms_schema.yaml
+# Schema definition for external transformation configurations
+
+external_transforms:
+  description: "Configuration schema for external transformation capabilities"
+  type: "array"
+  items:
+    type: "object"
+    properties:
+      type:
+        type: "string"
+        enum: ["python_file", "beam_yaml", "custom_function"]
+        description: "Type of external transformation"
+      
+      description:
+        type: "string"
+        description: "Human-readable description of the transformation"
+      
+      enabled:
+        type: "boolean"
+        default: true
+        description: "Whether this transformation is enabled"
+      
+      order:
+        type: "integer"
+        description: "Execution order (lower numbers execute first)"
+      
+      conditional_execution:
+        type: "object"
+        description: "Conditions for when this transformation should run"
+        properties:
+          field_exists:
+            type: "array"
+            items:
+              type: "string"
+            description: "List of fields that must exist"
+          
+          field_values:
+            type: "object"
+            description: "Required field values"
+          
+          record_count_min:
+            type: "integer"
+            description: "Minimum number of records required"
+          
+          record_count_max:
+            type: "integer"
+            description: "Maximum number of records allowed"
+    
+    # Type-specific configurations using anyOf for multiple conditionals
+    anyOf:
+      # Python file configuration
+      - if:
+          properties:
+            type:
+              const: "python_file"
+        then:
+          properties:
+            file_path:
+              type: "string"
+              pattern: "^/.*\\.py$"
+              description: "Absolute path to Python file"
+            
+            function_name:
+              type: "string"
+              pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+              description: "Name of the function to call"
+            
+            parameters:
+              type: "object"
+              description: "Parameters to pass to the function"
+            
+            imports:
+              type: "array"
+              items:
+                type: "string"
+              description: "Additional imports required"
+            
+            dependencies:
+              type: "array"
+              items:
+                type: "string"
+              description: "Python package dependencies"
+            
+            timeout_seconds:
+              type: "integer"
+              minimum: 1
+              maximum: 3600
+              default: 300
+              description: "Maximum execution time in seconds"
+            
+            memory_limit_mb:
+              type: "integer"
+              minimum: 128
+              maximum: 8192
+              default: 1024
+              description: "Memory limit in megabytes"
+          
+          required: ["file_path", "function_name"]
+      
+      # Beam YAML configuration
+      - if:
+          properties:
+            type:
+              const: "beam_yaml"
+        then:
+          properties:
+            yaml_config:
+              type: "string"
+              description: "Beam YAML pipeline configuration"
+            
+            parameters:
+              type: "object"
+              description: "Parameters to pass to the Beam pipeline"
+            
+            beam_version:
+              type: "string"
+              pattern: "^\\d+\\.\\d+\\.\\d+$"
+              default: "2.50.0"
+              description: "Apache Beam version to use"
+            
+            runner:
+              type: "string"
+              enum: ["DirectRunner", "FlinkRunner", "SparkRunner"]
+              default: "DirectRunner"
+              description: "Beam runner to use"
+            
+            pipeline_options:
+              type: "object"
+              description: "Additional pipeline options"
+          
+          required: ["yaml_config"]
+      
+      # Custom function configuration
+      - if:
+          properties:
+            type:
+              const: "custom_function"
+        then:
+          properties:
+            function_code:
+              type: "string"
+              description: "Python function code as string"
+            
+            parameters:
+              type: "object"
+              description: "Parameters to pass to the function"
+            
+            imports:
+              type: "array"
+              items:
+                type: "string"
+              description: "Required imports"
+            
+            security_mode:
+              type: "string"
+              enum: ["restricted", "sandboxed", "trusted"]
+              default: "restricted"
+              description: "Security mode for code execution"
+            
+            allowed_operations:
+              type: "array"
+              items:
+                type: "string"
+                enum: ["file_read", "network_access", "subprocess", "eval"]
+              description: "Allowed operations for the function"
+          
+          required: ["function_code"]
+
+# Global settings for external transformations
+external_transform_settings:
+  type: "object"
+  properties:
+    default_timeout_seconds:
+      type: "integer"
+      minimum: 30
+      maximum: 3600
+      default: 300
+    
+    default_memory_limit_mb:
+      type: "integer"
+      minimum: 128
+      maximum: 8192
+      default: 1024
+    
+    max_concurrent_transforms:
+      type: "integer"
+      minimum: 1
+      maximum: 10
+      default: 3
+    
+    enable_caching:
+      type: "boolean"
+      default: true
+    
+    cache_ttl_minutes:
+      type: "integer"
+      minimum: 1
+      maximum: 1440
+      default: 60
+    
+    retry_policy:
+      type: "object"
+      properties:
+        max_retries:
+          type: "integer"
+          minimum: 0
+          maximum: 5
+          default: 2
+        
+        backoff_factor:
+          type: "number"
+          minimum: 1.0
+          maximum: 5.0
+          default: 2.0
+        
+        retry_on_errors:
+          type: "array"
+          items:
+            type: "string"
+          default: ["timeout", "memory_error", "import_error"]
+    
+    security:
+      type: "object"
+      properties:
+        allowed_imports:
+          type: "array"
+          items:
+            type: "string"
+          default: ["pandas", "numpy", "datetime", "json", "math", "logging"]
+        
+        blocked_imports:
+          type: "array"
+          items:
+            type: "string"
+          default: ["os", "sys", "subprocess", "socket", "urllib"]
+        
+        enable_file_system_access:
+          type: "boolean"
+          default: false
+        
+        enable_network_access:
+          type: "boolean"
+          default: false
+        
+        max_file_size_mb:
+          type: "integer"
+          minimum: 1
+          maximum: 100
+          default: 10
+
+# Validation rules for external transformations
+validation_rules:
+  python_file:
+    file_existence: true
+    syntax_check: true
+    function_signature_check: true
+    import_validation: true
+    security_scan: true
+  
+  beam_yaml:
+    yaml_syntax_check: true
+    beam_schema_validation: true
+    pipeline_validation: false  # Can be resource intensive
+  
+  custom_function:
+    syntax_check: true
+    security_scan: true
+    ast_analysis: true
+    forbidden_operations_check: true
+
+# Monitoring and logging configuration
+monitoring:
+  enable_performance_tracking: true
+  enable_resource_monitoring: true
+  enable_error_tracking: true
+  
+  metrics:
+    execution_time: true
+    memory_usage: true
+    cpu_usage: true
+    error_count: true
+    success_rate: true
+  
+  logging:
+    log_level: "INFO"
+    log_format: "structured"
+    include_stack_traces: true
+    max_log_size_mb: 50
+
+# Error handling configuration
+error_handling:
+  on_transformation_failure:
+    action: "fail_task"  # Options: "fail_task", "skip_transform", "use_fallback"
+    fallback_transformation:
+      type: "custom_function"
+      function_code: |
+        def fallback_transform(df, **kwargs):
+          import pandas as pd
+          # Simple fallback - just add error flag
+          df['transformation_error'] = True
+          df['error_timestamp'] = pd.Timestamp.now()
+          return df
+  
+  on_timeout:
+    action: "fail_task"
+    cleanup_resources: true
+  
+  on_memory_limit:
+    action: "fail_task"
+    dump_debug_info: true

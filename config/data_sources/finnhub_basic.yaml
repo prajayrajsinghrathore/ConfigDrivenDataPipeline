@@ -1,0 +1,74 @@
+# File: config/data_sources/finnhub_basic.yaml
+# Pipeline 1: Basic transformations only (no external transforms)
+
+data_source:
+  name: "finnhub_basic"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    pattern: "^[0-9]{10}-[0-9]{2}-[0-9]{6}$"
+    required: true
+  - field: "cik"
+    type: "string"
+    pattern: "^[0-9]+$"
+    required: true
+  - field: "symbol"
+    type: "string"
+    required: true
+  - field: "filedDate"
+    type: "string"
+    required: true
+  - field: "form"
+    type: "string"
+    required: true
+
+transformation:
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+    filedDate: "datetime"
+    acceptedDate: "datetime"
+
+  new_columns:
+    filing_year: "pd.to_datetime(filedDate).dt.year"
+    setup_upper: "accessNumber.str.upper()"
+    processed_at: "pd.Timestamp.now()"
+    pipeline_type: "basic_transformation"
+
+  filters:
+    # Only include filings from the last 5 years
+    filing_year: ">= 2019"
+
+# No external transformations - just basic built-in transformations
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 5
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_basic"
+    format: "csv"
+
+schedule:
+  interval: "0 */6 * * *"  # Every 6 hours
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["basic", "finnhub", "no_external_transforms"]
+
+event:
+  topic: "finnhub_basic_transformations"

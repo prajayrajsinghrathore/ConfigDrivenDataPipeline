@@ -1,0 +1,264 @@
+# File: config/data_sources/alpha_vantage_demo.yaml
+
+data_source:
+  name: "alpha_vantage_daily_prices"
+  type: "rest_api"
+  # Get daily stock prices for Apple (AAPL) using your API key
+  endpoint: "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=AAPL&apikey=31YUPE5HZ5EO3XS9"
+  authentication:
+    type: "none"  # API key is in the URL
+  request_config:
+    method: "GET"
+    timeout: 15
+    retry_count: 3
+    headers:
+      Accept: "application/json"
+      User-Agent: "Airflow-Pipeline/1.0"
+
+validation_rules: []
+
+transformation:
+  # We'll process the nested structure in external transforms
+  new_columns:
+    processed_at: "pd.Timestamp.now()"
+    pipeline_type: "alpha_vantage_demo"
+
+  external_transforms:
+    - type: "custom_function"
+      description: "Flatten Alpha Vantage response structure with validation"
+      function_code: |
+        def flatten_alpha_vantage_data(df, **kwargs):
+            """
+            Convert Alpha Vantage nested JSON response to flat tabular data
+            """
+            processed_rows = []
+            
+            for _, row in df.iterrows():
+                # Handle different possible data structures from the API response
+                row_data = None
+                
+                # Check if we have direct access to the JSON structure
+                if 'Time Series (Daily)' in row and 'Meta Data' in row:
+                    row_data = row
+                else:
+                    # Check if the row contains a single column with JSON data
+                    for col in df.columns:
+                        if isinstance(row[col], dict):
+                            if 'Time Series (Daily)' in row[col] and 'Meta Data' in row[col]:
+                                row_data = row[col]
+                                break
+                        elif isinstance(row[col], str):
+                            try:
+                                import json
+                                parsed = json.loads(row[col])
+                                if 'Time Series (Daily)' in parsed and 'Meta Data' in parsed:
+                                    row_data = parsed
+                                    break
+                            except:
+                                continue
+                
+                # Validate that we have the required structure
+                if not row_data or 'Time Series (Daily)' not in row_data or 'Meta Data' not in row_data:
+                    logger.warning("Alpha Vantage API response missing required structure. Skipping row.")
+                    continue
+                    
+                time_series = row_data['Time Series (Daily)']
+                meta_data = row_data['Meta Data']
+                
+                # Validate meta data structure
+                if not isinstance(meta_data, dict):
+                    logger.warning("Meta Data is not a dictionary. Skipping row.")
+                    continue
+                    
+                if not isinstance(time_series, dict):
+                    logger.warning("Time Series (Daily) is not a dictionary. Skipping row.")
+                    continue
+                
+                # Extract metadata
+                symbol = meta_data.get('2. Symbol', 'UNKNOWN')
+                last_refreshed = meta_data.get('3. Last Refreshed', '')
+                time_zone = meta_data.get('5. Time Zone', 'US/Eastern')
+                
+                # Process each date's data
+                for date_str, daily_data in time_series.items():
+                    if not isinstance(daily_data, dict):
+                        logger.warning(f"Invalid daily data for date {date_str}. Skipping.")
+                        continue
+                        
+                    try:
+                        processed_row = {
+                            'date': date_str,
+                            'symbol': symbol,
+                            'last_refreshed': last_refreshed,
+                            'time_zone': time_zone,
+                            'open': float(daily_data.get('1. open', 0)),
+                            'high': float(daily_data.get('2. high', 0)),
+                            'low': float(daily_data.get('3. low', 0)),
+                            'close': float(daily_data.get('4. close', 0)),
+                            'volume': int(daily_data.get('5. volume', 0)),
+                            'data_source': 'alpha_vantage',
+                            'processed_at': pd.Timestamp.now()
+                        }
+                        
+                        # Validate numeric values
+                        if all(processed_row[field] >= 0 for field in ['open', 'high', 'low', 'close', 'volume']):
+                            processed_rows.append(processed_row)
+                        else:
+                            logger.warning(f"Invalid price data for date {date_str}. Skipping.")
+                            
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Error processing data for date {date_str}: {e}. Skipping.")
+                        continue
+            
+            # Convert to DataFrame
+            if processed_rows:
+                result_df = pd.DataFrame(processed_rows)
+                # Sort by date (most recent first)
+                result_df['date'] = pd.to_datetime(result_df['date'])
+                result_df = result_df.sort_values('date', ascending=False)
+                logger.info(f"Successfully processed {len(result_df)} stock price records")
+                return result_df
+            else:
+                # Return empty dataframe with expected columns if no data
+                logger.warning("No valid data found in Alpha Vantage response")
+                return pd.DataFrame(columns=[
+                    'date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 
+                    'data_source', 'processed_at'
+                ])
+      parameters: {}
+
+    - type: "custom_function"
+      description: "Calculate technical indicators and market metrics"
+      function_code: |
+        def calculate_technical_indicators(df, **kwargs):
+            """
+            Add technical analysis indicators to stock price data
+            """
+            if len(df) == 0:
+                return df
+                
+            result_df = df.copy()
+            
+            # Basic price calculations
+            result_df['price_range'] = result_df['high'] - result_df['low']
+            result_df['daily_return_pct'] = (
+                (result_df['close'] - result_df['open']) / result_df['open'] * 100
+            ).round(2)
+            
+            # Market sentiment indicators
+            result_df['is_green_day'] = result_df['close'] > result_df['open']
+            result_df['is_red_day'] = result_df['close'] < result_df['open']
+            result_df['is_doji'] = abs(result_df['close'] - result_df['open']) < 0.01
+            
+            # Volume analysis
+            if len(result_df) > 1:
+                result_df['volume_ma_3'] = result_df['volume'].rolling(window=3, min_periods=1).mean().round(0)
+                result_df['above_avg_volume'] = result_df['volume'] > result_df['volume_ma_3']
+            else:
+                result_df['volume_ma_3'] = result_df['volume']
+                result_df['above_avg_volume'] = True
+            
+            # Price movement categories
+            result_df['volatility_pct'] = (result_df['price_range'] / result_df['open'] * 100).round(2)
+            result_df['volatility_category'] = pd.cut(
+                result_df['volatility_pct'],
+                bins=[0, 1, 2.5, 5, float('inf')],
+                labels=['Low', 'Medium', 'High', 'Extreme'],
+                include_lowest=True
+            )
+            
+            # Moving averages (if we have enough data)
+            if len(result_df) >= 5:
+                result_df['close_ma_5'] = result_df['close'].rolling(window=5, min_periods=1).mean().round(2)
+                result_df['above_ma5'] = result_df['close'] > result_df['close_ma_5']
+            else:
+                result_df['close_ma_5'] = result_df['close']
+                result_df['above_ma5'] = True
+            
+            return result_df
+      parameters: {}
+
+    - type: "custom_function"
+      description: "Generate trading insights and alerts"
+      function_code: |
+        def generate_trading_insights(df, **kwargs):
+            """
+            Generate trading signals and market insights
+            """
+            if len(df) == 0:
+                return df
+                
+            result_df = df.copy()
+            
+            # Simple trading signals
+            result_df['signal'] = 'HOLD'
+            
+            # Buy signals: Green day + above average volume + above MA5
+            buy_condition = (
+                result_df['is_green_day'] & 
+                result_df['above_avg_volume'] & 
+                result_df['above_ma5']
+            )
+            result_df.loc[buy_condition, 'signal'] = 'BUY'
+            
+            # Sell signals: Red day + high volatility + below MA5
+            sell_condition = (
+                result_df['is_red_day'] & 
+                (result_df['volatility_pct'] > 2.0) & 
+                (~result_df['above_ma5'])
+            )
+            result_df.loc[sell_condition, 'signal'] = 'SELL'
+            
+            # Market strength score (0-100)
+            strength_score = 0
+            if len(result_df) > 0:
+                green_days_pct = (result_df['is_green_day'].sum() / len(result_df) * 100)
+                avg_volume_ratio = (result_df['above_avg_volume'].sum() / len(result_df) * 100)
+                ma5_ratio = (result_df['above_ma5'].sum() / len(result_df) * 100)
+                
+                result_df['market_strength_score'] = (
+                    (green_days_pct * 0.4) + 
+                    (avg_volume_ratio * 0.3) + 
+                    (ma5_ratio * 0.3)
+                ).round(1)
+            
+            # Add trading day context
+            result_df['trading_day'] = result_df['date'].dt.day_name()
+            result_df['is_week_start'] = result_df['trading_day'].isin(['Monday'])
+            result_df['is_week_end'] = result_df['trading_day'].isin(['Friday'])
+            
+            # Risk assessment
+            result_df['risk_level'] = 'Medium'
+            result_df.loc[result_df['volatility_pct'] > 3, 'risk_level'] = 'High'
+            result_df.loc[result_df['volatility_pct'] < 1, 'risk_level'] = 'Low'
+            
+            return result_df
+      parameters: {}
+
+destination:
+  primary:
+    type: "local_file"
+    path: "/tmp/airflow_output/demo"
+    filename: "alpha_vantage_daily_prices"
+    format: "csv"
+
+schedule:
+  interval: "0 9 * * 1-5"  # 9 AM on weekdays (when market opens)
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["demo", "alpha_vantage", "stock_prices", "external_transforms"]
+
+event:
+  topic: "alpha_vantage_stock_data"
+
+# Demo metadata
+metadata:
+  version: "1.0.0"
+  description: "Demo pipeline showcasing Alpha Vantage integration with custom transformations"
+  owner: "demo_team"
+  data_source_url: "https://www.alphavantage.co/"
+  features:
+    - "Nested JSON flattening"
+    - "Technical indicator calculations" 
+    - "Trading signal generation"
+    - "Multiple file format outputs"

@@ -1,0 +1,305 @@
+# File: config/templates/comprehensive_financial_pipeline.yaml
+# Comprehensive template showing all external transformation capabilities
+
+data_source:
+  name: "comprehensive_financial_data"
+  type: "rest_api"
+  endpoint: "https://api.example.com/financial/data"
+  authentication:
+    type: "bearer_token"
+    credentials: "${API_TOKEN}"  # Environment variable
+  request_config:
+    method: "GET"
+    timeout: 30
+    retry_count: 3
+    headers:
+      Accept: "application/json"
+      User-Agent: "Airflow-Pipeline/1.0"
+    params:
+      format: "json"
+      limit: 1000
+
+# Data validation rules
+validation_rules:
+  - field: "symbol"
+    type: "string"
+    max_length: 10
+    required: true
+  - field: "price"
+    type: "numeric"
+    range: [0, 10000]
+    required: true
+  - field: "timestamp"
+    type: "datetime"
+    required: true
+  - field: "volume"
+    type: "numeric"
+    range: [0, null]
+    required: false
+
+# Transformation configuration
+transformation:
+  # Standard transformations (existing functionality)
+  column_types:
+    symbol: "string"
+    price: "float"
+    volume: "int"
+    timestamp: "datetime"
+    market_cap: "float"
+
+  new_columns:
+    price_category: "pd.cut(price, bins=[0, 10, 50, 100, float('inf')], labels=['Low', 'Medium', 'High', 'Premium'])"
+    trading_day: "timestamp.dt.day_name()"
+    processed_at: "pd.Timestamp.now()"
+    price_volume_ratio: "price / volume if volume > 0 else 0"
+
+  filters:
+    price: "> 0"
+    volume: ">= 0"
+
+  # External transformations (new functionality)
+  external_transforms:
+    # 1. Python file transformation
+    - type: "python_file"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "comprehensive_financial_transformation"
+      parameters:
+        enable_all_features: true
+        market_cap_threshold: 1000000000
+        include_sentiment: false
+        analyze_form_types: true
+      description: "Apply comprehensive financial analysis including ratios, categorization, and quality checks"
+
+    # 2. Beam YAML transformation
+    - type: "beam_yaml"
+      yaml_config: |
+        pipeline:
+          transforms:
+            - type: MapToFields
+              config:
+                language: python
+                fields:
+                  risk_category: |
+                    def categorize_risk(element):
+                      price = element.get('price', 0)
+                      volume = element.get('volume', 0)
+                      
+                      if price > 100 and volume > 1000000:
+                        return 'High Liquidity - Low Risk'
+                      elif price < 10 or volume < 1000:
+                        return 'High Risk'
+                      else:
+                        return 'Medium Risk'
+                    
+                    return categorize_risk(element)
+                  
+                  market_session: |
+                    def get_market_session(element):
+                      import datetime
+                      timestamp = element.get('timestamp', datetime.datetime.now())
+                      hour = timestamp.hour if hasattr(timestamp, 'hour') else 12
+                      
+                      if 9 <= hour < 16:
+                        return 'Regular Trading'
+                      elif 4 <= hour < 9:
+                        return 'Pre-Market'
+                      elif 16 <= hour < 20:
+                        return 'After-Hours'
+                      else:
+                        return 'Closed'
+                    
+                    return get_market_session(element)
+      description: "Add risk categorization and market session classification"
+
+    # 3. Custom function transformation
+    - type: "custom_function"
+      function_code: |
+        def advanced_technical_analysis(df, **kwargs):
+            import pandas as pd
+            import numpy as np
+            
+            # Sort by symbol and timestamp for technical analysis
+            df = df.sort_values(['symbol', 'timestamp'])
+            
+            # Calculate technical indicators
+            for symbol in df['symbol'].unique():
+                symbol_mask = df['symbol'] == symbol
+                symbol_data = df[symbol_mask].copy()
+                
+                # Simple Moving Average (5 periods)
+                df.loc[symbol_mask, 'sma_5'] = symbol_data['price'].rolling(window=5, min_periods=1).mean()
+                
+                # Price change from previous period
+                df.loc[symbol_mask, 'price_change'] = symbol_data['price'].diff()
+                df.loc[symbol_mask, 'price_change_pct'] = symbol_data['price'].pct_change() * 100
+                
+                # Volume Moving Average
+                df.loc[symbol_mask, 'volume_ma_5'] = symbol_data['volume'].rolling(window=5, min_periods=1).mean()
+                
+                # Relative Volume (current volume vs average)
+                df.loc[symbol_mask, 'relative_volume'] = symbol_data['volume'] / symbol_data['volume'].rolling(window=20, min_periods=1).mean()
+                
+                # Volatility (rolling standard deviation of returns)
+                df.loc[symbol_mask, 'volatility_5d'] = symbol_data['price'].pct_change().rolling(window=5, min_periods=1).std() * 100
+            
+            # Add signal flags
+            df['bullish_signal'] = (df['price'] > df['sma_5']) & (df['relative_volume'] > 1.2)
+            df['bearish_signal'] = (df['price'] < df['sma_5']) & (df['price_change_pct'] < -2)
+            
+            # Overall technical score (0-100)
+            df['technical_score'] = np.where(
+                df['bullish_signal'], 75,
+                np.where(df['bearish_signal'], 25, 50)
+            )
+            
+            return df
+      parameters:
+        lookback_periods: 20
+        volatility_threshold: 5.0
+      description: "Calculate technical analysis indicators and trading signals"
+
+    # 4. Data quality and enrichment transformation
+    - type: "python_file"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "data_quality_checks"
+      parameters:
+        required_columns: ["symbol", "price", "volume", "timestamp"]
+      description: "Perform comprehensive data quality validation"
+
+    # 5. Industry benchmarking (if industry data available)
+    - type: "python_file"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "industry_benchmarking"
+      parameters:
+        industry_column: "sector"
+        benchmark_metrics: ["technical_score", "volatility_5d", "relative_volume"]
+      description: "Add industry-relative performance metrics"
+
+# Enrichment configuration
+enrichment:
+  - type: "reference_lookup"
+    lookup_table: "REFERENCE.COMPANY_MASTER"
+    source_field: "symbol"
+    lookup_field: "SYMBOL"
+    target_fields: ["COMPANY_NAME", "SECTOR", "INDUSTRY", "MARKET_CAP", "COUNTRY"]
+    description: "Enrich with company fundamental data"
+
+  - type: "reference_lookup"
+    lookup_table: "REFERENCE.SECTOR_METRICS"
+    source_field: "sector"
+    lookup_field: "SECTOR_NAME"
+    target_fields: ["SECTOR_PE_RATIO", "SECTOR_BETA", "SECTOR_DIVIDEND_YIELD"]
+    description: "Add sector-level benchmarking metrics"
+
+# Destination configuration
+destination:
+  primary:
+    type: "snowflake_table"
+    table: "ANALYTICS.ENRICHED_FINANCIAL_DATA"
+    mode: "append"
+    description: "Primary analytical data store"
+
+  backup:
+    type: "azure_data_lake"
+    container: "financial-data-backup"
+    path: "enriched/financial_data"
+    format: "parquet"
+    description: "Backup storage in data lake"
+
+  archive:
+    type: "local_file"
+    path: "/opt/airflow/archive/financial_data"
+    filename: "comprehensive_financial_data"
+    format: "parquet"
+    description: "Local archive for debugging"
+
+  # Additional destination for real-time analytics
+  summary:
+    type: "snowflake_table"
+    table: "ANALYTICS.FINANCIAL_DATA_SUMMARY"
+    mode: "replace"
+    description: "Aggregated summary table"
+
+# Schedule configuration
+schedule:
+  interval: "*/15 * * * *"  # Every 15 minutes
+  start_date: "2024-01-01"
+  catchup: false
+  max_active_runs: 1
+  tags: 
+    - "financial_data"
+    - "real_time"
+    - "comprehensive"
+    - "external_transforms"
+
+# Event configuration for Kafka
+event:
+  topic: "comprehensive_financial_data_stream"
+  schema_version: "2.0"
+  enable_data_lineage: true
+
+# Pipeline metadata
+metadata:
+  version: "3.0.0"
+  description: "Comprehensive financial data pipeline with external transformations"
+  owner: "data_engineering_team"
+  contact: "data-eng@company.com"
+  documentation: "https://wiki.company.com/data-pipelines/financial-comprehensive"
+  
+  # Transformation tracking
+  transformations_applied:
+    - "comprehensive_financial_transformation"
+    - "advanced_technical_analysis"
+    - "data_quality_checks"
+    - "industry_benchmarking"
+    - "beam_yaml_risk_categorization"
+  
+  # Data lineage
+  upstream_dependencies:
+    - "financial_market_api"
+    - "company_reference_data"
+    - "sector_benchmarks"
+  
+  downstream_consumers:
+    - "real_time_trading_dashboard"
+    - "risk_management_system"
+    - "portfolio_analytics"
+
+# Configuration for external transform execution
+external_transform_settings:
+  timeout_seconds: 600  # 10 minutes
+  max_memory_mb: 2048   # 2GB
+  retry_count: 2
+  enable_caching: true
+  cache_ttl_hours: 1
+  
+  # Security settings
+  allowed_imports:
+    - "pandas"
+    - "numpy"
+    - "datetime"
+    - "json"
+    - "math"
+    - "statistics"
+    - "typing"
+    - "logging"
+  
+  restricted_operations:
+    - "file_system_access"
+    - "network_requests"
+    - "subprocess_execution"
+
+# Monitoring and alerting
+monitoring:
+  enable_data_quality_alerts: true
+  enable_performance_monitoring: true
+  enable_transformation_tracking: true
+  
+  alert_thresholds:
+    max_processing_time_minutes: 30
+    min_record_count: 100
+    max_error_rate_percent: 5
+    
+  notification_channels:
+    - "slack://data-engineering"
+    - "email://data-alerts@company.com"

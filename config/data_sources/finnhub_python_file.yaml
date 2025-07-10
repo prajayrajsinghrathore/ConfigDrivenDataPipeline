@@ -1,0 +1,84 @@
+# File: config/data_sources/finnhub_python_file.yaml
+# Pipeline 3: Python file transformations only
+
+data_source:
+  name: "finnhub_python_file"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    required: true
+  - field: "symbol"
+    type: "string"
+    required: true
+  - field: "cik"
+    type: "string"
+    required: true
+
+transformation:
+  # Basic transformations first
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+
+  new_columns:
+    processed_at: "pd.Timestamp.now()"
+    pipeline_type: "python_file_only"
+
+  # External transformations using Python files only
+  external_transforms:
+    - type: "python_file"
+      description: "Main SEC filing data enhancement"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "enhance_financial_data"
+      parameters:
+        add_fiscal_year: true
+        calculate_ratios: true
+        market_cap_threshold: 1000000
+
+    - type: "python_file"
+      description: "Advanced SEC analysis"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "enhance_sec_filing_data"
+      parameters:
+        categorize_forms: true
+        add_compliance_metrics: true
+        calculate_filing_patterns: true
+
+    - type: "python_file"
+      description: "Data quality validation"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "data_quality_checks"
+      parameters:
+        required_columns: ["accessNumber", "symbol", "cik", "filedDate"]
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 5
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_python_file"
+    format: "csv"
+
+schedule:
+  interval: "0 */10 * * *"  # Every 10 hours
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["python_file", "finnhub", "external_transforms"]
+
+event:
+  topic: "finnhub_python_file_transformations"

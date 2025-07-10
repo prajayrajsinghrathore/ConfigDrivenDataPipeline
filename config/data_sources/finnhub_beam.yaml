@@ -1,0 +1,121 @@
+# File: config/data_sources/finnhub_beam.yaml
+# Pipeline 2: Beam YAML transformations only
+
+data_source:
+  name: "finnhub_beam"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    required: true
+  - field: "symbol"
+    type: "string"
+    required: true
+  - field: "form"
+    type: "string"
+    required: true
+
+transformation:
+  # Basic transformations first
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+
+  new_columns:
+    processed_at: "pd.Timestamp.now()"
+    pipeline_type: "beam_yaml_only"
+
+  # External transformations using Beam YAML only
+  external_transforms:
+    - type: "beam_yaml"
+      description: "SEC form categorization using Beam YAML"
+      yaml_config: |
+        pipeline:
+          transforms:
+            - type: MapToFields
+              config:
+                language: python
+                fields:
+                  form_category: |
+                    def categorize_sec_form(element):
+                        form = element.get('form', '')
+                        if form.startswith('10-K'):
+                            return 'Annual Report'
+                        elif form.startswith('10-Q'):
+                            return 'Quarterly Report'
+                        elif form.startswith('8-K'):
+                            return 'Current Report'
+                        elif form.startswith('DEF'):
+                            return 'Proxy Statement'
+                        else:
+                            return 'Other'
+
+    - type: "beam_yaml"
+      description: "Market categorization using Beam YAML"
+      yaml_config: |
+        pipeline:
+          transforms:
+            - type: MapToFields
+              config:
+                language: python
+                fields:
+                  market_category: |
+                    def categorize_market(element):
+                        symbol = element.get('symbol', '')
+                        if len(symbol) <= 3:
+                            return 'Large Cap'
+                        elif len(symbol) <= 4:
+                            return 'Mid Cap'
+                        else:
+                            return 'Small Cap'
+
+    - type: "beam_yaml"
+      description: "Filing analysis using Beam YAML"
+      yaml_config: |
+        pipeline:
+          transforms:
+            - type: MapToFields
+              config:
+                language: python
+                fields:
+                  filing_analysis: |
+                    def analyze_filing(element):
+                        form = element.get('form', '')
+                        symbol = element.get('symbol', '')
+                        if form.startswith('10-') and len(symbol) <= 4:
+                            return 'Important Filing'
+                        else:
+                            return 'Standard Filing'
+
+destination:
+  primary:
+    #type: "snowflake_table"
+    #table: "METRICS.COMPANY_FILINGS"
+    type: "print_logs"
+    max_rows: 5
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_beam"
+    format: "csv"
+
+schedule:
+  interval: "0 */8 * * *"  # Every 8 hours
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["beam_yaml", "finnhub", "external_transforms"]
+
+event:
+  topic: "finnhub_beam_transformations"

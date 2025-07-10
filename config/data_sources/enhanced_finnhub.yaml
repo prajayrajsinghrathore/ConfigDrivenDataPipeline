@@ -1,0 +1,103 @@
+# File: config/data_sources/finnhub.yaml
+data_source:
+  name: "finnhub"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    max_length: 500
+    required: true
+  - field: "symbol"
+    type: "string"
+    max_length: 500
+    required: true
+  - field: "cik"
+    type: "string"
+    required: true
+
+transformation:
+  # Standard transformations (existing)
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+
+  new_columns:
+    filing_year: "pd.to_datetime(filedDate).dt.year"
+    setup_upper: "accessNumber.str.upper()"
+    processed_at: "pd.Timestamp.now()"
+
+  filters:
+    setup_length: "> 10"
+
+  # New external transformations
+  external_transforms:
+    - type: "python_file"
+      file_path: "/opt/airflow/config/transforms/financial_data_transforms.py"
+      function_name: "enhance_financial_data"
+      parameters:
+        add_fiscal_year: true
+        calculate_ratios: true
+        market_cap_threshold: 1000000
+
+    - type: "beam_yaml"
+      yaml_config: |
+        pipeline:
+          transforms:
+            - type: MapToFields
+              config:
+                language: python
+                fields:
+                  market_category: |
+                    def categorize_market_cap(element):
+                      if element.get('marketCap', 0) > 1000000000:
+                        return 'Large Cap'
+                      elif element.get('marketCap', 0) > 100000000:
+                        return 'Mid Cap'
+                      else:
+                        return 'Small Cap'
+                    return categorize_market_cap(element)
+
+    - type: "custom_function"
+      function_code: |
+        def custom_transformation(df, **kwargs):
+            # Add custom business logic
+            recent_threshold_days = kwargs.get('recent_threshold_days', 30)
+            df['filing_age_days'] = (pd.Timestamp.now() - pd.to_datetime(df['filedDate'])).dt.days
+            df['is_recent_filing'] = df['filing_age_days'] <= recent_threshold_days
+            return df
+      parameters:
+        recent_threshold_days: 30
+
+# No enrichment for testing
+# enrichment: []
+
+destination:
+  primary:
+    type: "snowflake_table"
+    table: "METRICS.COMPANY_FILINGS"
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_file"
+    format: "csv"
+
+schedule:
+  interval: "*/5 * * * *"
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["finnhub_api", "external_transforms"]
+
+event:
+  topic: "SEC_filings_data"

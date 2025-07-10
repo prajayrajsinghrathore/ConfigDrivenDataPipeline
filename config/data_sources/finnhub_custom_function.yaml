@@ -1,0 +1,134 @@
+# File: config/data_sources/finnhub_custom_function.yaml
+# Pipeline 4: Custom inline function transformations only
+
+data_source:
+  name: "finnhub_custom_function"
+  type: "rest_api"
+  endpoint: "https://finnhub.io/api/v1/stock/filings?cik=320193&token=d1jat7pr01qkl9jb5aogd1jat7pr01qkl9jb5ap0"
+  authentication:
+    type: "none"
+  request_config:
+    method: "GET"
+    timeout: 10
+    retry_count: 2
+    headers:
+      Accept: "application/json"
+
+validation_rules:
+  - field: "accessNumber"
+    type: "string"
+    required: true
+  - field: "symbol"
+    type: "string"
+    required: true
+  - field: "filedDate"
+    type: "string"
+    required: true
+
+transformation:
+  # Basic transformations first
+  column_types:
+    accessNumber: "string"
+    symbol: "string"
+    cik: "string"
+
+  new_columns:
+    processed_at: "pd.Timestamp.now()"
+    pipeline_type: "custom_function_only"
+
+  # External transformations using custom inline functions only
+  external_transforms:
+    - type: "custom_function"
+      description: "Calculate filing age and recency"
+      function_code: |
+        def filing_age_analysis(df, **kwargs):
+            # Calculate filing age
+            df['filing_age_days'] = (pd.Timestamp.now() - pd.to_datetime(df['filedDate'])).dt.days
+            
+            # Use parameter from config
+            recent_threshold_days = kwargs.get('recent_threshold_days', 30)
+            df['is_recent_filing'] = df['filing_age_days'] <= recent_threshold_days
+            
+            # Add metadata
+            df['age_analysis_applied'] = True
+            
+            return df
+      parameters:
+        recent_threshold_days: 30
+
+    - type: "custom_function"
+      description: "SEC form analysis and categorization"
+      function_code: |
+        def sec_form_analysis(df, **kwargs):
+            # Categorize SEC forms
+            def categorize_form(form):
+                if pd.isna(form):
+                    return 'Unknown'
+                form_str = str(form).upper()
+                if form_str.startswith('10-K'):
+                    return 'Annual Report'
+                elif form_str.startswith('10-Q'):
+                    return 'Quarterly Report'
+                elif form_str.startswith('8-K'):
+                    return 'Current Report'
+                elif form_str.startswith('DEF'):
+                    return 'Proxy Statement'
+                else:
+                    return 'Other'
+            
+            df['form_category'] = df['form'].apply(categorize_form)
+            df['is_major_filing'] = df['form_category'].isin(['Annual Report', 'Quarterly Report'])
+            
+            # Add analysis metadata
+            df['form_analysis_applied'] = True
+            
+            return df
+      parameters: {}
+
+    - type: "custom_function"
+      description: "Company symbol analysis"
+      function_code: |
+        def symbol_analysis(df, **kwargs):
+            # Analyze symbol characteristics
+            df['symbol_length'] = df['symbol'].str.len()
+            
+            # Market categorization based on symbol length (simplified)
+            def categorize_by_symbol(symbol):
+                if pd.isna(symbol):
+                    return 'Unknown'
+                length = len(str(symbol))
+                if length <= 3:
+                    return 'Likely Large Cap'
+                elif length == 4:
+                    return 'Likely Mid Cap'
+                else:
+                    return 'Likely Small Cap'
+            
+            df['symbol_based_category'] = df['symbol'].apply(categorize_by_symbol)
+            
+            # Add symbol analysis flags
+            df['has_short_symbol'] = df['symbol_length'] <= 3
+            df['symbol_analysis_applied'] = True
+            
+            return df
+      parameters: {}
+
+destination:
+  primary:
+    type: "print_logs"
+    max_rows: 5
+
+  backup:
+    type: "local_file"
+    path: "/tmp/airflow_output"
+    filename: "finnhub_custom_function"
+    format: "csv"
+
+schedule:
+  interval: "0 */12 * * *"  # Every 12 hours
+  start_date: "2024-01-01"
+  catchup: false
+  tags: ["custom_function", "finnhub", "inline_transforms"]
+
+event:
+  topic: "finnhub_custom_function_transformations"

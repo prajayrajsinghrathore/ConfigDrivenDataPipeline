@@ -15,12 +15,42 @@ validation:
     data_source: "config/schemas/data_source_schema.yaml"
     transformation: "config/schemas/transformation_schema.yaml"
     enrichment: "config/schemas/enrichment_schema.yaml"
+    external_transforms: "config/schemas/external_transforms_schema.yaml"  # Added
   
   # Log validation details
   log_validation_details: true
   
   # Allow unknown fields (for flexibility)
   allow_unknown_fields: true
+  
+  # External transform validation settings (new)
+  validate_external_transforms: true
+  external_transform_timeout: 300  # 5 minutes
+
+# External transform validation settings (new section)
+external_transform_validation:
+  # Enable validation of external Python files
+  validate_python_files: true
+  
+  # Enable validation of Beam YAML configurations
+  validate_beam_yaml: true
+  
+  # Enable validation of custom function syntax
+  validate_custom_functions: true
+  
+  # Security validation
+  security_checks:
+    enabled: true
+    check_file_permissions: true
+    scan_for_dangerous_imports: true
+    validate_function_signatures: true
+  
+  # Performance validation
+  performance_checks:
+    enabled: true
+    max_file_size_mb: 10
+    max_function_complexity: 50  # Cyclomatic complexity
+    warn_on_large_functions: true
 
 # Backward compatibility settings
 backward_compatibility:
@@ -28,8 +58,90 @@ backward_compatibility:
   field_mappings:
     schedule_interval: schedule.interval
     start_date: schedule.start_date
+    transforms_dir: config.transforms  # Added for legacy support
   
   # Deprecated fields (log warnings but allow)
   deprecated_fields:
     - schedule_interval
     - dag_id
+    - transforms_directory
+
+# Validation rules
+enhanced_validation:
+  # Data source specific validations
+  data_source:
+    # Validate API endpoints are reachable (optional, can be slow)
+    validate_endpoints: false
+    
+    # Validate authentication credentials exist (without testing them)
+    validate_credentials_exist: true
+    
+    # Check for required environment variables
+    check_env_variables: true
+  
+  # Destination validations
+  destination:
+    # Validate connection strings and table names
+    validate_connections: true
+    
+    # Check if destination schemas exist
+    validate_schemas: false  # Can be slow
+    
+    # Validate write permissions (optional)
+    validate_permissions: false
+  
+  # Schedule validations
+  schedule:
+    # Validate cron expressions
+    validate_cron_syntax: true
+    
+    # Check for reasonable intervals (not too frequent)
+    min_interval_minutes: 1
+    
+    # Warn about very frequent schedules
+    warn_frequent_schedules: true
+
+# Error handling configuration (new section)
+error_handling:
+  # Continue validation even if some checks fail
+  continue_on_error: true
+  
+  # Maximum number of validation errors before stopping
+  max_errors: 10
+  
+  # Collect all errors before reporting
+  collect_all_errors: true
+  
+  # Generate detailed error reports
+  detailed_error_reports: true
+
+# Logging configuration for validation
+logging:
+  # Log level for validation messages
+  level: "INFO"  # Options: "DEBUG", "INFO", "WARN", "ERROR"
+  
+  # Include validation timing information
+  include_timing: true
+  
+  # Log successful validations (can be verbose)
+  log_success: true
+  
+  # Log validation statistics
+  log_statistics: true
+  
+  # Format for validation log messages
+  format: "structured"  # Options: "simple", "structured", "json"
+
+# Cache settings for validation (new section)
+cache:
+  # Enable caching of validation results
+  enabled: true
+  
+  # Cache TTL in minutes
+  ttl_minutes: 30
+  
+  # Cache directory
+  directory: "/tmp/airflow_validation_cache"
+  
+  # Maximum cache size in MB
+  max_size_mb: 100
