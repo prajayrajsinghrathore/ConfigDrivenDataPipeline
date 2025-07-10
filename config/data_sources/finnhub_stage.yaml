@@ -48,7 +48,7 @@ destination:
   backup:
     type: "local_file"
     path: "/tmp/airflow_output"
-    filename: "finnhub_stage_file"
+    filename: "finnhub_stage_file.csv"
     format: "csv"
 
   archive:
