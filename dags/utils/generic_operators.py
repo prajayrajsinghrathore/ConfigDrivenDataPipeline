@@ -4,7 +4,6 @@ Generic operators that can handle any data source type
 """
 
 import pandas as pd
-import numpy as np
 from airflow.models import BaseOperator
 from airflow.utils.context import Context
 from typing import Dict, Any, Optional
@@ -13,6 +12,8 @@ import logging
 from utils.data_fetchers import fetch_http_data, fetch_sftp_data
 from utils.data_transformers import transform_data, enrich_from_snowflake
 from utils.data_loaders import load_to_snowflake, load_to_snowflake_stage, load_to_azure_data_lake, load_to_azure_blob
+from utils.kafka_publisher import kafka_publisher
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,48 @@ class GenericDataIngestionOperator(BaseOperator):
         
         source_type = self.data_source_config['type']
         
-        if source_type == 'rest_api':
-            return self._fetch_from_api()
-        elif source_type == 'sftp':
-            return self._fetch_from_sftp()
+        topic="default_topic_ingestion"
+        event = self.config['event']
+        if not event or 'topic' not in event or event['topic'] is None:
+            topic = 'no_topic_ingestion'
         else:
+            topic = event['topic'] + '_ingestion'
+
+        df = None
+        if source_type == 'rest_api':
+            df = self._fetch_from_api()
+        elif source_type == 'sftp':
+            df = self._fetch_from_sftp()
+        else:
+            _ = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type=source_type,
+                status='failure',
+                message=f"Data ingestion failed. Unsupported {source_type}.",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic
+            )
             raise ValueError(f"Unsupported source type: {source_type}")
-    
+        
+        if df is None or df.empty:
+            logger.warning(f"No data fetched from {source_type}. Returning empty DataFrame.")
+            return pd.DataFrame()
+        
+        publish_pipline_event = kafka_publisher.publish_pipeline_event(
+            dag_id=context['dag'].dag_id,
+            task_id=context['task'].task_id,
+            event_type=source_type,
+            status='success',
+            message=f"Data ingestion from {source_type} completed successfully",
+            execution_date=datetime.now(timezone.utc),
+            topic=topic
+        )
+        if not publish_pipline_event:
+            logger.error("Failed to publish data ingestion event to Kafka")
+        
+        return df
+
     def _fetch_from_api(self) -> pd.DataFrame:
         """Fetch data from REST API"""
         endpoint = self.data_source_config['endpoint']
@@ -53,6 +89,7 @@ class GenericDataIngestionOperator(BaseOperator):
         if auth_config.get('type') in ['bearer_token', 'api_key']:
             # In production, you'd get this from Airflow Variables or Connections
             api_key = auth_config.get('credentials')
+        
         # For 'none' or 'oauth' types, api_key remains None
         
         # Get request configuration
@@ -114,40 +151,78 @@ class GenericDataTransformationOperator(BaseOperator):
             # Pull data from previous task using XCom
             self.input_data = context['task_instance'].xcom_pull(task_ids='ingest_data')
         
+        if self.input_data is None or (isinstance(self.input_data, list) and len(self.input_data) == 0):
+            logger.warning("No input data provided for transformation. Returning empty DataFrame.")
+        
         df = self.input_data.copy()
         
-        # Apply validation
-        if 'validation_rules' in self.config:
-            df = self._apply_validation(df)
-        
-        # Apply transformations
-        if 'transformation' in self.config:
-            df = self._apply_transformations(df)
-        
-        # Apply enrichment
-        if 'enrichment' in self.config:
-            df = self._apply_enrichment(df)
-        
-        logger.info(f"Transformation complete. Result: {len(df)} rows")
-        
-        # Convert to JSON-serializable format for XCom
-        if len(df) > 0:
-            # Convert DataFrame to list of dicts with safe serialization
-            result = []
-            for _, row in df.iterrows():
-                record = {}
-                for col in df.columns:
-                    value = row[col]
-                    if pd.isna(value):
-                        record[col] = None
-                    elif isinstance(value, (list, dict)):
-                        record[col] = value
-                    else:
-                        record[col] = str(value)  # Convert everything else to string for safety
-                result.append(record)
-            return result
+        topic="default_topic_transformation"
+        event = self.config['event']
+        if not event or 'topic' not in event or event['topic'] is None:
+            topic = 'no_topic_transformation'
         else:
-            return []
+            topic = event['topic']+ '_transformation'
+
+        try:
+            # Apply validation
+            if 'validation_rules' in self.config:
+                df = self._apply_validation(df)
+            
+            # Apply transformations
+            if 'transformation' in self.config:
+                df = self._apply_transformations(df)
+            
+            # Apply enrichment
+            if 'enrichment' in self.config:
+                df = self._apply_enrichment(df)
+            
+            logger.info(f"Transformation complete. Result: {len(df)} rows")
+            
+            # Convert to JSON-serializable format for XCom
+            result= []
+            if len(df) > 0:
+                # Convert DataFrame to list of dicts with safe serialization
+                for _, row in df.iterrows():
+                    record = {}
+                    for col in df.columns:
+                        value = row[col]
+                        if pd.isna(value):
+                            record[col] = None
+                        elif isinstance(value, (list, dict)):
+                            record[col] = value
+                        else:
+                            record[col] = str(value)  # Convert everything else to string for safety
+                    result.append(record)
+            
+            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type='task_success',
+                status='success',
+                message=f"Data Trasformation task completed successfully",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic
+            )
+            if not publish_pipline_event:
+                logger.error("Failed to publish data ingestion event to Kafka")
+
+            return result
+        except Exception as e:
+            # KAFKA EVENT: Publish failed data transformation event
+            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type='task_failure',
+                status='failure',
+                message=f"Data Transformation task failed: {str(e)}",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic
+            )
+            if not publish_pipline_event:
+                logger.error("Failed to publish data transformation failure event to Kafka")
+            
+            logger.error(f"Data Transformation failed: {str(e)}")
+            raise
     
     def _apply_validation(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply validation rules from configuration"""
@@ -313,87 +388,151 @@ class GenericDataLoadOperator(BaseOperator):
         else:
             df = self.input_data
         destination_config = self.config['destination']
+
+        topic="default_topic"
+        event = self.config['event']
+        if not event or 'topic' not in event or event['topic'] is None:
+            topic = 'no_topic'
+        else:
+            topic = event['topic']
         
         results = []
         
         # Load to primary destination
         if 'primary' in destination_config:
-            result = self._load_to_destination(df, destination_config['primary'])
+            result = self._load_to_destination(df, destination_config['primary'], topic, context, 'primary')
             results.append(f"Primary: {result}")
         
         # Load to backup destination
         if 'backup' in destination_config:
-            result = self._load_to_destination(df, destination_config['backup'])
+            result = self._load_to_destination(df, destination_config['backup'], topic,  context, 'backup')
             results.append(f"Backup: {result}")
         
         # Load to archive destination
         if 'archive' in destination_config:
-            result = self._load_to_destination(df, destination_config['archive'])
+            result = self._load_to_destination(df, destination_config['archive'], topic, context, 'archive')
             results.append(f"Archive: {result}")
+        
         
         return " | ".join(results)
     
-    def _load_to_destination(self, df: pd.DataFrame, dest_config: Dict[str, Any]) -> str:
+    def _load_to_destination(self, df: pd.DataFrame, dest_config: Dict[str, Any], topic: str, context: Context, dest_type_label: str) -> str:
         """Load data to a specific destination"""
         dest_type = dest_config['type']
+        dag_id = context['dag'].dag_id
+        task_id = context['task'].task_id
+
+        try:
+            result_message = ""
+                                                
+            if dest_type == 'snowflake_table':
+                table = dest_config['table']
+                mode = dest_config.get('mode', 'append')
+                
+                result_message = load_to_snowflake(
+                    df=df,
+                    snowflake_conn_id='snowflake-default',
+                    table_name=table.split('.')[-1],
+                    schema=table.split('.')[-2] if '.' in table else 'PUBLIC',
+                    if_exists=mode
+                )
         
-        if dest_type == 'snowflake_table':
-            table = dest_config['table']
-            mode = dest_config.get('mode', 'append')
+            elif dest_type == 'snowflake_stage':
+                mode = dest_config.get('mode', 'append')
+                
+                result_message = load_to_snowflake_stage(
+                    df=df,
+                    snowflake_conn_id='snowflake-default',
+                    stage_name='FINNHUB_STAGE',
+                    file_name='finnhub_test_file.csv'
+                )
+        
+            elif dest_type == 'azure_data_lake':
+                container = dest_config['container']
+                path = dest_config['path']
+                file_format = dest_config.get('format', 'parquet')
+                
+                result_message = load_to_azure_data_lake(
+                    df=df,
+                    azure_conn_id='azure_data_lake_default',
+                    container=container,
+                    file_path=path,
+                    file_format=file_format
+                )
             
-            return load_to_snowflake(
-                df=df,
-                snowflake_conn_id='snowflake-default',
-                table_name=table.split('.')[-1],
-                schema=table.split('.')[-2] if '.' in table else 'PUBLIC',
-                if_exists=mode
-            )
-        
-        elif dest_type == 'snowflake_stage':
-            mode = dest_config.get('mode', 'append')
+            elif dest_type == 'azure_blob':
+                container = dest_config['container']
+                path = dest_config['path']
+                file_format = dest_config.get('format', 'parquet')
+                
+                result_message = load_to_azure_blob(
+                    df=df,
+                    azure_conn_id='azure_blob_default',
+                    container=container,
+                    blob_name=path,
+                    file_format=file_format
+                )
             
-            return load_to_snowflake_stage(
-                df=df,
-                snowflake_conn_id='snowflake-default',
-                stage_name='FINNHUB_STAGE',
-                file_name='finnhub_test_file.csv'
-            )
-        
-        elif dest_type == 'azure_data_lake':
-            container = dest_config['container']
-            path = dest_config['path']
-            file_format = dest_config.get('format', 'parquet')
+            elif dest_type == 'local_file':
+                result_message = self._load_to_local_file(df, dest_config)
             
-            return load_to_azure_data_lake(
-                df=df,
-                azure_conn_id='azure_data_lake_default',
-                container=container,
-                file_path=path,
-                file_format=file_format
-            )
-        
-        elif dest_type == 'azure_blob':
-            container = dest_config['container']
-            path = dest_config['path']
-            file_format = dest_config.get('format', 'parquet')
+            elif dest_type == 'print_logs':
+                result_message = self._load_to_logs(df, dest_config)
             
-            return load_to_azure_blob(
-                df=df,
-                azure_conn_id='azure_blob_default',
-                container=container,
-                blob_name=path,
-                file_format=file_format
+            else:
+                raise ValueError(f"Unsupported destination type: {dest_type}")
+            
+            # Calculate data size estimate
+            # data_size_bytes = None
+            # try:
+            #     # Rough estimate: average of 50 bytes per cell
+            #     data_size_bytes = len(df) * len(df.columns) * 50 if len(df) > 0 else 0
+            # except:
+            #     pass
+            
+            # KAFKA EVENT: Publish successful data load event to Market Data topic
+            event_publish_status = kafka_publisher.publish_data(
+                dag_id=dag_id,
+                data=df.to_dict(orient='records'),
+                topic=topic,
+                status='success'
             )
+            if not event_publish_status:
+                logger.error("Failed to publish data load event to Kafka")
+                
+            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type='task_success',
+                status='success',
+                message=f"Data has been loaded successfully",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic + "_load"
+            )
+            if not publish_pipline_event:
+                logger.error("Failed to publish data ingestion event to Kafka")
         
-        elif dest_type == 'local_file':
-            return self._load_to_local_file(df, dest_config)
-        
-        elif dest_type == 'print_logs':
-            return self._load_to_logs(df, dest_config)
-        
-        else:
-            raise ValueError(f"Unsupported destination type: {dest_type}")
+            logger.info(f"Published data load event to Kafka.")
+            
+            return result_message
+            
+        except Exception as e:
+            # 🎯 KAFKA EVENT: Publish failed data load event
+            publish_pipline_event = kafka_publisher.publish_pipeline_event(
+                dag_id=context['dag'].dag_id,
+                task_id=context['task'].task_id,
+                event_type='task_success',
+                status='success',
+                message=f"{str(e) if e else ''}",
+                execution_date=datetime.now(timezone.utc),
+                topic=topic + "_load"
+            )
+            if not publish_pipline_event:
+                logger.error("Failed to publish data load failure event to Kafka")
     
+            logger.error(f"Published failed data load event to Kafka for {dest_type_label} destination: {dest_type}")            
+            raise
+
     def _load_to_local_file(self, df: pd.DataFrame, dest_config: Dict[str, Any]) -> str:
         """Save DataFrame to local temporary file"""
         import os
@@ -439,3 +578,4 @@ class GenericDataLoadOperator(BaseOperator):
         logger.info("=== END DATA OUTPUT ===")
         
         return f"Printed {len(df)} rows to logs"
+    

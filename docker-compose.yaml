@@ -70,7 +70,12 @@ x-airflow-common:
     AIRFLOW__KUBERNETES__IN_CLUSTER: 'false'
     AIRFLOW__KUBERNETES__KUBERNETES_IN_CLUSTER: 'false'
     AIRFLOW__KUBERNETES__CONFIG_FILE: '/opt/airflow/.kube/config'
-
+    
+    # Kafka Configuration
+    KAFKA_TOPIC_MARKET_DATA: 'market-data'
+    KAFKA_SECURITY_PROTOCOL: 'PLAINTEXT'
+    KAFKA_BOOTSTRAP_SERVERS: 'kafka:29092'
+    
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -87,7 +92,8 @@ x-airflow-common:
     - ./config:/opt/airflow/config
     - ./plugins:/opt/airflow/plugins
     # Development files for easy package management
-    - ./requirements.txt:/requirements.txt
+    #- ./requirements.txt:/requirements.txt
+    - ./grafana/provisioning:/etc/grafana/provisioning
     # Kubernetes file
     - ~/.kube:/opt/airflow/.kube:ro
     # Environment file
@@ -347,5 +353,103 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # Kafka Service (Strimzi-based Kafka without Zookeeper)
+  kafka:
+    image: quay.io/strimzi/kafka:0.38.0-kafka-3.6.0
+    command: [
+      "sh", "-c",
+      "bin/kafka-storage.sh format -t $$(bin/kafka-storage.sh random-uuid) -c config/kraft/server.properties && bin/kafka-server-start.sh config/kraft/server.properties --override advertised.listeners=$${KAFKA_ADVERTISED_LISTENERS} --override listener.security.protocol.map=$${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP} --override listeners=$${KAFKA_LISTENERS} --override inter.broker.listener.name=$${KAFKA_INTER_BROKER_LISTENER_NAME} --override controller.listener.names=$${KAFKA_CONTROLLER_LISTENER_NAMES} --override controller.quorum.voters=$${KAFKA_CONTROLLER_QUORUM_VOTERS}"
+    ]
+    environment:
+      LOG_DIR: /tmp/logs
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka-data:/kafka/kafka-logs-kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+
+  # Kafka Topic Initialization
+  kafka-init:
+    image: quay.io/strimzi/kafka:0.38.0-kafka-3.6.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: [
+      "sh", "-c",
+      "echo 'Creating Kafka topics...' &&
+       kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic market-data &&
+       kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic pipeline-events &&
+       kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --topic data-quality &&
+       echo 'Topics created successfully'"
+    ]
+    restart: "no"
+
+  # Kowl (Kafka UI)
+  kowl:
+    image: quay.io/cloudhut/kowl:v1.5.0
+    restart: always
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TLS_ENABLED: false
+      KAFKA_SASL_ENABLED: false
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s 
+  # Grafana for data visualization
+  grafana:
+    image: grafana/grafana:main
+    hostname: grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=redis-datasource,hamedkarbasi93-kafka-datasource
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=hamedkarbasi93-kafka-datasource
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 volumes:
   postgres-db-volume:
+  kafka-data:
+  grafana-storage:

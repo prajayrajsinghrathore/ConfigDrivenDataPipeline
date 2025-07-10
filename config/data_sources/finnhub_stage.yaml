@@ -58,7 +58,10 @@ destination:
     format: "json"
 
 schedule:
-  interval: "*/10 * * * *" # Every 10 minutes for testing
+  interval: "*/59 * * * *" # Every 59 minutes for testing
   start_date: "2024-01-01"
   catchup: false
   tags: ["test", "finnhub_stage_api", "development"]
+
+event:
+  topic: "finnhub_stage_data"

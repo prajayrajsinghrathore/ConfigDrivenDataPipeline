@@ -1,0 +1,22 @@
+# Kowl Configuration File
+# Place this file at: config/kowl-config.yaml
+
+kafka:
+  brokers:
+    - kafka:29092
+  clientId: kowl
+  rackId: ""
+  tls:
+    enabled: false
+  sasl:
+    enabled: false
+
+server:
+  listenPort: 8080
+  gracefulShutdownTimeout: 30s
+  readTimeout: 30s
+  writeTimeout: 30s
+
+redpanda:
+  adminApi:
+    enabled: false
