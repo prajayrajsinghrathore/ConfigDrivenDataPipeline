@@ -1,0 +1,129 @@
+# Docker Compose Override for DAG Bundle Testing
+# Use: docker-compose -f docker-compose.yaml -f docker-compose.bundle-test.yaml up
+
+# This configuration demonstrates GitDagBundle testing locally
+# Uses a test Git repository to simulate production bundle deployment
+
+version: '3.8'
+
+services:
+  # Local Git server for testing GitDagBundle
+  # Serves as a mock Azure DevOps Git repository
+  git-server:
+    image: rlmsbxdpluksacr.azurecr.io/rockstorm/gitweb:2.52
+    container_name: airflow-git-server
+    ports:
+      - "8090:80"
+    volumes:
+      - ./test-config-repo:/var/www/git:ro  # Mount test configs as Git repo
+    networks:
+      - airflow
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Override airflow services to use DAG bundles
+  airflow-scheduler: &airflow-with-bundles
+    environment:
+      # Enable bundle storage path
+      - AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_STORAGE_PATH=/opt/airflow/bundle_storage
+      
+      # Bundle versioning for Kafka events
+      - AIRFLOW_DAG_BUNDLE_NAME=test_configs
+      - AIRFLOW_DAG_BUNDLE_VERSION=local-dev
+      
+      # Bundle configuration (LocalDagBundle for framework + GitDagBundle for configs)
+      # Note: In real deployment, this would be in airflow.cfg
+      # For docker-compose testing, we simulate with env vars
+      
+    volumes:
+      - ../dags:/opt/airflow/dags  # Framework bundle (LocalDagBundle)
+      - ./bundle_storage:/opt/airflow/bundle_storage  # Bundle cache directory
+      - ./test-config-repo:/opt/airflow/test-config-repo:ro  # Test configs
+    depends_on:
+      git-server:
+        condition: service_healthy
+
+  airflow-webserver:
+    <<: *airflow-with-bundles
+
+  airflow-worker:
+    <<: *airflow-with-bundles
+
+  airflow-triggerer:
+    <<: *airflow-with-bundles
+
+  airflow-dag-processor:
+    <<: *airflow-with-bundles
+
+  airflow-apiserver:
+    <<: *airflow-with-bundles
+
+networks:
+  airflow:
+    driver: bridge
+
+# ==============================================================================
+# TESTING INSTRUCTIONS
+# ==============================================================================
+# 1. Create test config repository structure:
+#    mkdir -p test-config-repo/
+#    cp config/data_sources/*.yaml test-config-repo/
+#    cd test-config-repo && git init && git add . && git commit -m "Initial configs"
+#
+# 2. Create bundle storage directory:
+#    mkdir -p bundle_storage
+#
+# 3. Start services with bundle testing:
+#    docker-compose -f docker-compose.yaml -f docker-compose.bundle-test.yaml up
+#
+# 4. Verify bundles are loaded:
+#    - Check scheduler logs for "Found bundle config directory"
+#    - Access webserver UI and verify DAGs are discovered
+#    - Check Kafka events contain bundle_name and bundle_version
+#
+# 5. Test bundle refresh:
+#    - Modify a config file in test-config-repo/
+#    - Commit changes: cd test-config-repo && git add . && git commit -m "Update config"
+#    - Wait for refresh_interval (60s) and verify DAG updates
+#
+# ==============================================================================
+# SIMULATING GITDAGBUNDLE (Correct Configuration)
+# ==============================================================================
+# For full GitDagBundle testing, modify docker/airflow.cfg:
+#
+# [dag_processor]
+# dag_bundle_storage_path = /opt/airflow/bundle_storage
+# dag_bundle_config_list = [
+#     {
+#       "name": "framework",
+#       "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+#       "kwargs": {"path": "/opt/airflow/dags", "refresh_interval": 300}
+#     },
+#     {
+#       "name": "test_configs",
+#       "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+#       "kwargs": {"path": "/opt/airflow/test-config-repo", "refresh_interval": 60}
+#     }
+#   ]
+#
+# For actual GitDagBundle with remote repo (requires git provider):
+#     {
+#       "name": "test_configs",
+#       "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
+#       "kwargs": {
+#         "tracking_ref": "main",
+#         "git_conn_id": "test_git_conn",
+#         "subdir": "",
+#         "refresh_interval": 60
+#       }
+#     }
+#
+# Then create Airflow connection:
+# airflow connections add test_git_conn \
+#   --conn-type git \
+#   --conn-host http://git-server/git/test-config-repo \
+#   --conn-login git \
+#   --conn-password ""

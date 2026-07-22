@@ -1,21 +1,36 @@
-data_source:
-  name: "simple_test"
-  type: "rest_api"
-  endpoint: "https://api.github.com/users/octocat"
-  authentication:
-    type: "none"
+# Simple test data source for local development
+name: simple_test
+description: Simple test API for local DAG generation testing
+source_type: http
 
-transformation:
-  new_columns:
-    name_upper: "name.str.upper() if 'name' in locals() else 'UNKNOWN'"
-    processed_at: "pd.Timestamp.now()"
-
-destination:
-  primary:
-    type: "print_logs"
-    max_rows: 5
+metadata:
+  tenant: testing
+  owner: data-engineering
+  tags:
+    - test
 
 schedule:
-  interval: "0 */2 * * *"  # Every 2 hours
+  interval: "0 9 * * *"
+  start_date: "2024-01-01"
   catchup: false
-  tags: ["simple_test"]
+
+retries: 1
+
+data_source:
+  name: simple_test
+  type: rest_api
+  connection_id: http_default
+  endpoint: https://api.chucknorris.io/jokes/random
+  method: GET
+  response_format: json
+
+destination:
+  type: local_file
+  path: /tmp/airflow_output/simple_test.json
+
+data_quality_checks:
+  enabled: true
+  rules:
+    - name: not_null
+      column: value
+      type: not_null

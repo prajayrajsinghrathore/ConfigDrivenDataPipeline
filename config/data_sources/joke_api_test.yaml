@@ -1,69 +1,48 @@
-# File: config/data_sources/joke_api_test.yaml
-data_source:
-  name: "joke_api_test"
-  type: "rest_api"
-  endpoint: "https://official-joke-api.appspot.com/jokes/programming/random"
-  authentication:
-    type: "none"  # No authentication needed for this API
-  request_config:
-    method: "GET"
-    timeout: 10
-    retry_count: 2
-    headers:
-      Accept: "application/json"
+# Joke API test for local development
+name: joke_api_test
+description: Test data source for validating TaskFlow API integration
+source_type: http
 
-validation_rules:
-  - field: "setup"
-    type: "string"
-    max_length: 500
-    required: true
-  - field: "punchline"
-    type: "string"
-    max_length: 500
-    required: true
-  - field: "type"
-    type: "string"
-    required: true
-
-transformation:
-  column_types:
-    setup: "string"
-    punchline: "string"
-    type: "string"
-    id: "int"
-  
-  new_columns:
-    setup_upper: "setup.str.upper()"
-    punchline_upper: "punchline.str.upper()"
-    full_joke: "setup_upper + ' -- ' + punchline_upper"
-    joke_length: "setup.str.len() + punchline.str.len()"
-    processed_at: "pd.Timestamp.now()"
-  
-  filters:
-    joke_length: "> 10"  # Only jokes longer than 10 characters
-
-# No enrichment needed for this test
-enrichment: []
-
-destination:
-  primary:
-    type: "print_logs"
-    max_rows: 20
-  
-  backup:
-    type: "local_file"
-    path: "/tmp/airflow_output"
-    filename: "joke_api_data"
-    format: "csv"
-  
-  archive:
-    type: "local_file"
-    path: "/tmp/airflow_output/archive"
-    filename: "joke_api_archive"
-    format: "json"
+metadata:
+  tenant: testing
+  owner: data-engineering
+  tags:
+    - test
+    - http-api
 
 schedule:
-  interval: "*/10 * * * *"  # Every 10 minutes for testing
+  interval: "0 10 * * *"
   start_date: "2024-01-01"
   catchup: false
-  tags: ["test", "joke_api", "development"]
+
+retries: 2
+
+data_source:
+  name: joke_api_test
+  type: rest_api
+  connection_id: http_default
+  endpoint: https://official-joke-api.appspot.com/random_joke
+  method: GET
+  response_format: json
+
+destination:
+  type: local_file
+  path: /tmp/airflow_output/joke_api_test.json
+
+transformations:
+  - type: add_column
+    column_name: processed_at
+    formula: "NOW()"
+  - type: add_column
+    column_name: joke_type
+    formula: "type"
+
+data_quality_checks:
+  enabled: true
+  rules:
+    - name: setup_not_null
+      column: setup
+      type: not_null
+    - name: punchline_not_null
+      column: punchline
+      type: not_null

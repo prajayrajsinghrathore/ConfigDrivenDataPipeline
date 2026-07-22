@@ -1,0 +1,49 @@
+# Marquez Configuration
+# This configures Marquez to consume OpenLineage events from Kafka
+# and store them in PostgreSQL for visualization.
+
+server:
+  applicationConnectors:
+    - type: http
+      port: 5000
+  adminConnectors:
+    - type: http
+      port: 5001
+
+# PostgreSQL Database Configuration
+db:
+  driverClass: org.postgresql.Driver
+  url: jdbc:postgresql://marquez-db:5432/marquez
+  user: marquez
+  password: marquez
+  # Connection pool settings
+  maxWaitForConnection: 1s
+  validationQuery: "SELECT 1"
+  minSize: 2
+  maxSize: 8
+  initialSize: 2
+
+# Kafka Consumer Configuration
+# Marquez will consume OpenLineage events from this topic
+kafka:
+  bootstrapServers: kafka:29092
+  topicName: openlineage.events
+  consumerGroupId: marquez-consumer
+  # Consumer settings
+  autoOffsetReset: earliest
+  enableAutoCommit: true
+  autoCommitIntervalMs: 1000
+
+# Logging Configuration
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      logFormat: "[%d{HH:mm:ss.SSS}] [%thread] %-5level %logger{36} - %msg%n"
+
+# Metrics Configuration
+metrics:
+  frequency: 10 seconds
+  reporters:
+    - type: console
+      frequency: 60 seconds

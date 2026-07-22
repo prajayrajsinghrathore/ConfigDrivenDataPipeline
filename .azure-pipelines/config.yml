@@ -1,0 +1,219 @@
+# Azure DevOps Pipeline for Airflow Config Repository
+# This pipeline validates, tests, and versions configuration files for DAG Bundles
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - '*.yaml'
+      - 'config/**'
+    exclude:
+      - 'README.md'
+      - 'docs/**'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.12'
+  configSchemaPath: 'config/schemas/data_source_schema.yaml'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate Configuration Files'
+    jobs:
+      - job: SchemaValidation
+        displayName: 'Schema Validation'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Set Python Version'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install pyyaml jsonschema pytest pytest-cov
+            displayName: 'Install Dependencies'
+
+          - script: |
+              echo "Running schema validation tests..."
+              pytest tests/contract/test_config_schemas.py -v --tb=short
+            displayName: 'Validate Config Schemas'
+            continueOnError: false
+
+          - script: |
+              echo "Checking for duplicate config names..."
+              python -c "
+              import os, yaml, sys
+              from pathlib import Path
+
+              config_names = {}
+              config_dir = Path('config/data_sources')
+              
+              if config_dir.exists():
+                  for file in config_dir.glob('*.yaml'):
+                      with open(file) as f:
+                          data = yaml.safe_load(f)
+                          if data and 'data_source' in data:
+                              name = data['data_source'].get('name')
+                              if name in config_names:
+                                  print(f'ERROR: Duplicate config name {name} in {file} and {config_names[name]}')
+                                  sys.exit(1)
+                              config_names[name] = file
+              
+              print(f'✓ Validated {len(config_names)} unique configs')
+              "
+            displayName: 'Check for Duplicate Configs'
+
+      - job: TenantValidation
+        displayName: 'Multi-Tenancy Validation'
+        dependsOn: SchemaValidation
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install pyyaml
+            displayName: 'Install Dependencies'
+
+          - script: |
+              echo "Validating tenant assignments..."
+              python -c "
+              import os, yaml, sys
+              from pathlib import Path
+
+              # Load global settings
+              with open('config/global_settings.yaml') as f:
+                  global_settings = yaml.safe_load(f)
+              
+              valid_tenants = set(global_settings.get('tenants', {}).keys())
+              print(f'Valid tenants: {valid_tenants}')
+
+              # Check all configs have valid tenant
+              config_dir = Path('config/data_sources')
+              if config_dir.exists():
+                  for file in config_dir.glob('*.yaml'):
+                      with open(file) as f:
+                          data = yaml.safe_load(f)
+                          if data:
+                              tenant = data.get('metadata', {}).get('tenant')
+                              if not tenant:
+                                  print(f'ERROR: {file.name} missing metadata.tenant field')
+                                  sys.exit(1)
+                              if tenant not in valid_tenants:
+                                  print(f'ERROR: {file.name} has invalid tenant {tenant}. Must be one of {valid_tenants}')
+                                  sys.exit(1)
+              
+              print('✓ All configs have valid tenant assignments')
+              "
+            displayName: 'Validate Tenant Assignments'
+
+  - stage: Version
+    displayName: 'Version and Tag'
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: CreateTag
+        displayName: 'Create Semantic Version Tag'
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - script: |
+              # Read current version from tags.txt or default to 1.0.0
+              if [ -f tags.txt ]; then
+                CURRENT_VERSION=$(cat tags.txt)
+              else
+                CURRENT_VERSION="1.0.0"
+              fi
+              
+              echo "Current version: $CURRENT_VERSION"
+              
+              # Parse version
+              IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+              MAJOR="${VERSION_PARTS[0]}"
+              MINOR="${VERSION_PARTS[1]}"
+              PATCH="${VERSION_PARTS[2]}"
+              
+              # Determine version bump based on commit message
+              COMMIT_MSG=$(git log -1 --pretty=%B)
+              
+              if [[ "$COMMIT_MSG" =~ ^BREAKING || "$COMMIT_MSG" =~ \[major\] ]]; then
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                echo "Major version bump detected"
+              elif [[ "$COMMIT_MSG" =~ ^feat || "$COMMIT_MSG" =~ \[minor\] ]]; then
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                echo "Minor version bump detected"
+              else
+                PATCH=$((PATCH + 1))
+                echo "Patch version bump detected"
+              fi
+              
+              NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              echo "New version: $NEW_VERSION"
+              
+              # Write new version to tags.txt
+              echo "$NEW_VERSION" > tags.txt
+              
+              # Create git tag
+              TAG_NAME="prod-v${NEW_VERSION}"
+              echo "Creating tag: $TAG_NAME"
+              
+              # Configure git
+              git config user.email "azuredevops@pipeline.com"
+              git config user.name "Azure DevOps Pipeline"
+              
+              # Commit tags.txt update
+              git add tags.txt
+              git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+              
+              # Create and push tag
+              git tag -a "$TAG_NAME" -m "Release version $NEW_VERSION"
+              git push origin main --tags
+              
+              echo "##vso[task.setvariable variable=NEW_VERSION;isOutput=true]$NEW_VERSION"
+              echo "##vso[task.setvariable variable=TAG_NAME;isOutput=true]$TAG_NAME"
+            displayName: 'Bump Version and Create Tag'
+            name: versionStep
+
+          - script: |
+              echo "✓ Successfully created tag: $(versionStep.TAG_NAME)"
+              echo "To deploy this version, update Helm values:"
+              echo "  dag_bundle_config_list[configs].kwargs.ref: 'refs/tags/$(versionStep.TAG_NAME)'"
+            displayName: 'Deployment Instructions'
+
+  - stage: Publish
+    displayName: 'Publish Artifacts'
+    dependsOn: Version
+    condition: succeeded()
+    jobs:
+      - job: PublishConfigs
+        displayName: 'Publish Configuration Artifacts'
+        steps:
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Configs'
+            inputs:
+              pathToPublish: 'config/data_sources'
+              artifactName: 'airflow-configs'
+              publishLocation: 'Container'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Schemas'
+            inputs:
+              pathToPublish: 'config/schemas'
+              artifactName: 'config-schemas'
+              publishLocation: 'Container'

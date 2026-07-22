@@ -1,0 +1,44 @@
+- quay.io/prometheus/prometheus:v3.9.1
+- quay.io/prometheus/alertmanager:v0.31.0
+- quay.io/prometheus/node-exporter:v1.10.2
+- quay.io/prometheus-operator/prometheus-operator:v0.88.1
+- quay.io/prometheus-operator/prometheus-config-reloader:v0.88.1
+- quay.io/kiwigrid/k8s-sidecar:2.5.0
+- quay.io/kiali/kiali:v2.21
+- quay.io/kiali/kiali-operator:v2.21
+- docker.io/jaegertracing/all-in-one:1.76.0
+
+- dhi.io/grafana:12-debian13-dev (User: root)
+- dhi.io/kube-state-metrics:2-debian13-dev (User: root)
+- dhi.io/node-exporter:1 (debian13, User: nonroot 65532)
+
+- quay.io/strimzi/operator:0.50.0
+- quay.io/strimzi/kafka:latest-kafka-4.1.1
+- quay.io/strimzi/kafka-bridge:0.33.1
+- quay.io/strimzi/kaniko-executor:0.50.0
+- quay.io/cloudhut/kowl:v1.5.0
+
+- docker.io/marquezproject/marquez:0.51.1
+- docker.io/marquezproject/marquez-web:0.51.1
+- docker.io/rockstorm/gitweb:2.52
+
+
+---Version/Tag Bumps-------
+
+
+- docker.io,apache/airflow:3.1.6
+- docker pull dhi.io/redis:8-debian13-dev
+
+- dhi.io/redis:8-debian13-dev (root)
+- dhi.io/postgres:18-alpine3.22 (User: postres 70)
+- dhi.io/python:3.12-debian12-dev
+- dhi.io/dotnet:10-sdk (root)
+- dhi.io/dotnet:10 (runtime, debian, User: nonroot 65532)
+- dhi.io/aspnetcore:10  (Debian 13, User: nonroot 65532)
+- dhi.io/ruby:4 (debian 13, User: nonroot 65532)
+- dhi.io/node:25-debian12 (debian 12, User: node 1000)
+- dhi.io/kubectl:1-debian13-dev (root)
+- dhi.io/kubectl:1 (debian 13, User: nonroot 65532)
+
+docker.io/library/redis:8.4.0-alpine
+docker.io/library/postgres:18.1-bookworm

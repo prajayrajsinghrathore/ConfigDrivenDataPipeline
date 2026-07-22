@@ -1,31 +1,20 @@
-# =============================================================================
-# config/global_settings.yaml
-# =============================================================================
-# Global configurations that apply to all data sources
-
-default_settings:
-  retry_count: 3
-  timeout: 30
-  email_on_failure: true
+# Global settings for local development
+default_args:
+  owner: airflow
+  depends_on_past: false
+  email_on_failure: false
   email_on_retry: false
+  retry_delay_minutes: 5
 
-connections:
-  snowflake_default: "snowflake-default"
-  azure_data_lake: "azure_data_lake_default"
-  azure_blob: "azure_blob_default"
+tenants:
+  testing:
+    pool: default_pool
+    connection_prefix: test_
+  development:
+    pool: default_pool
+    connection_prefix: dev_
 
-notification:
-  email_on_success: false
-  email_on_failure: true
-  failure_recipients: ["prajayraj.rathore@rlam.co.uk"]
-  success_recipients: ["data-team@rlam.co.uk"]
-
-data_quality:
-  enable_validation: true
-  validation_failure_action: "fail" # or "warn" or "skip"
-  data_profiling: true
-
-audit:
-  track_lineage: true
-  log_transformations: true
-  retention_days: 90
+kafka:
+  enabled: false  # Disable for local testing
+  bootstrap_servers: localhost:9092
+  security_protocol: PLAINTEXT

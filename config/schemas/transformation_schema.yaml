@@ -7,6 +7,7 @@ transformation:
     - filters
     - aggregations
     - joins
+    - custom_transform
 
 column_types:
   allowed_types:
@@ -18,16 +19,126 @@ column_types:
 
 new_columns:
   # Format: column_name: formula
-  # Formulas can include:
-  supported_operations:
-    - "field.str.upper()"         # Uppercase transformation
-    - "field.str.lower()"         # Lowercase transformation
-    - "pd.Timestamp.now()"        # Current timestamp
-    - "field1 * field2"           # Multiplication
-    - "field1 + field2"           # Addition
-    - "field1 + ' -- ' + field2"  # String concatenation
-    - "abs(field)"                # Absolute value
-    - "field.dt.year"             # Extract year from datetime
+  # Formulas use the safe Formula Engine with whitelisted functions.
+  # 
+  # Available functions:
+  #
+  # MATH FUNCTIONS:
+  #   - abs(value)                    : Absolute value
+  #   - round(value, decimals)        : Round to decimals
+  #   - min(a, b, ...)                : Minimum value
+  #   - max(a, b, ...)                : Maximum value
+  #   - pow(base, exp)                : Power/exponent
+  #
+  # STRING FUNCTIONS:
+  #   - upper(string)                 : Convert to uppercase
+  #   - lower(string)                 : Convert to lowercase
+  #   - strip(string)                 : Remove whitespace
+  #   - trim(string)                  : Remove whitespace (alias)
+  #   - left(string, n)               : First n characters
+  #   - right(string, n)              : Last n characters
+  #   - substring(string, start, end) : Extract substring
+  #   - concat(str1, str2, ...)       : Concatenate strings
+  #   - replace(string, old, new)     : Replace substring
+  #   - contains(string, substring)   : Check contains
+  #   - length(string)                : String length
+  #
+  # DATE/TIME FUNCTIONS:
+  #   - now()                         : Current datetime
+  #   - today()                       : Current date
+  #   - year(date)                    : Extract year
+  #   - month(date)                   : Extract month
+  #   - day(date)                     : Extract day
+  #   - format_date(date, format)     : Format as string
+  #   - date_diff(d1, d2, unit)       : Date difference
+  #
+  # NULL HANDLING:
+  #   - coalesce(val1, val2, ...)     : First non-null value
+  #   - ifnull(value, default)        : Default if null
+  #   - is_null(value)                : Check if null
+  #   - is_not_null(value)            : Check if not null
+  #
+  # CONDITIONAL FUNCTIONS:
+  #   - if_else(cond, true_val, false_val) : Conditional
+  #   - case_when(c1, v1, c2, v2, default) : Multiple conditions
+  #   - between(value, low, high)          : Range check
+  #   - in_list(value, list)               : List membership
+  #
+  # TYPE CONVERSION:
+  #   - to_string(value)              : Convert to string
+  #   - to_int(value)                 : Convert to integer
+  #   - to_float(value)               : Convert to float
+  #   - to_date(value, format)        : Convert to date
+  #
+  # ARITHMETIC OPERATORS:
+  #   +, -, *, /, //, %, **
+  #
+  # COMPARISON OPERATORS:
+  #   ==, !=, <, >, <=, >=
+  #
+  # LOGICAL OPERATORS:
+  #   and, or, not
+  #
+  # Examples:
+  examples:
+    - "quantity * price"                              # Multiplication
+    - "price - cost"                                  # Subtraction  
+    - "(price - cost) / price * 100"                  # Complex math
+    - "upper(customer_name)"                          # Uppercase
+    - "concat(first_name, ' ', last_name)"            # Concatenation
+    - "now()"                                         # Current timestamp
+    - "if_else(amount > 1000, 'HIGH', 'LOW')"         # Conditional
+    - "coalesce(preferred_name, first_name, 'N/A')"   # Null handling
+    - "year(order_date)"                              # Extract year
+    - "round(total_amount, 2)"                        # Rounding
+  
+  # Legacy pandas-style formulas are auto-converted:
+  legacy_support:
+    - "field.str.upper()"      # -> upper(field)
+    - "field.str.lower()"      # -> lower(field)
+    - "pd.Timestamp.now()"     # -> now()
+    - "field.dt.year"          # -> year(field)
+    - "np.where(cond, t, f)"   # -> if_else(cond, t, f)
+
+custom_transform:
+  # Execute custom transformation logic from an external Python file.
+  # Use this for complex business logic that cannot be expressed in formulas.
+  #
+  # The Python file must contain a function that:
+  #   - Takes a pandas DataFrame as first argument
+  #   - Returns a pandas DataFrame
+  #   - Can accept additional keyword arguments from 'kwargs'
+  #
+  # Example config:
+  #   custom_transform:
+  #     python_file: "transforms/order_processing.py"
+  #     function: "apply_business_rules"
+  #     kwargs:
+  #       region: "EMEA"
+  #       apply_discounts: true
+  #
+  # Example Python file (transforms/order_processing.py):
+  #   def apply_business_rules(df, region='DEFAULT', apply_discounts=False):
+  #       # Your custom logic here
+  #       if apply_discounts:
+  #           df['final_price'] = df['price'] * 0.9
+  #       df['region'] = region
+  #       return df
+  #
+  fields:
+    python_file:
+      type: string
+      required: true
+      description: "Path to Python file (relative to /opt/airflow/dags or absolute)"
+    function:
+      type: string
+      required: false
+      default: "transform"
+      description: "Name of the function to call"
+    kwargs:
+      type: object
+      required: false
+      description: "Keyword arguments to pass to the function"
 
 filters:
   # Format: field_name: condition

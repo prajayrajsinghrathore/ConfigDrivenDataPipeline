@@ -1,0 +1,109 @@
+# =============================================================================
+# DOCKER BUILD CONTEXT EXCLUSIONS
+# =============================================================================
+# Excluding these files reduces build context size and speeds up builds
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Test and coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.hypothesis/
+tests/
+pytest.ini
+
+# Documentation (not needed in runtime image)
+docs/
+Documentation/
+*.md
+!README.md
+*.rst
+*.txt
+!requirements.txt
+
+# Logs
+logs/
+*.log
+
+# Local configuration (sensitive)
+.env.local
+.env.*.local
+*.env
+secrets/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+
+# Grafana provisioning (separate service)
+grafana/
+
+# Docker files (prevent recursive issues)
+docker-compose*.yaml
+docker-compose*.yml
+Dockerfile*
+!Dockerfile
+
+# Plugins (if not needed)
+plugins/
+
+# Schema file (validation only, not runtime)
+schema.json

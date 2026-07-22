@@ -1,0 +1,303 @@
+# Airflow Helm Chart Values for AKS Deployment with DAG Bundles
+# Official Airflow Helm Chart: https://airflow.apache.org/docs/helm-chart/stable/index.html
+
+# ==============================================================================
+# AIRFLOW IMAGE CONFIGURATION
+# ==============================================================================
+images:
+  airflow:
+    repository: rlmsbxdpluksacr.azurecr.io/airflow
+    tag: "3.1.6-custom"  # Custom image with framework code
+    pullPolicy: IfNotPresent
+
+# ==============================================================================
+# EXECUTOR CONFIGURATION
+# ==============================================================================
+executor: "CeleryExecutor"  # For distributed task execution
+
+# ==============================================================================
+# DAG BUNDLE CONFIGURATION
+# ==============================================================================
+# Configure multiple DAG bundles for separation of framework and configs
+# Airflow 3.x supports versioned bundles for reproducible runs
+
+config:
+  # DAG processor configuration for bundle support
+  dag_processor:
+    # Path where DAG bundles will be stored/cached
+    dag_bundle_storage_path: "/opt/airflow/bundle_storage"
+    
+    # List of DAG bundles to load
+    # IMPORTANT: Whitespace on last line matters for configparser
+    dag_bundle_config_list: |
+      [
+        {
+          "name": "framework",
+          "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+          "kwargs": {
+            "path": "/opt/airflow/dags",
+            "refresh_interval": 300
+          }
+        },
+        {
+          "name": "production_configs",
+          "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
+          "kwargs": {
+            "tracking_ref": "refs/heads/develop",
+            "git_conn_id": "github_configs",
+            "subdir": "config",
+            "refresh_interval": 300,
+            "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/develop/config/{subdir}"
+          }
+        }
+      ]
+  
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES
+# ==============================================================================
+env:
+  # Bundle versioning for observability
+  - name: AIRFLOW_DAG_BUNDLE_NAME
+    value: "production_configs"
+  - name: AIRFLOW_DAG_BUNDLE_VERSION
+    value: "develop"  # Tracking develop branch
+  
+  # Multi-tenancy config path
+  - name: AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_STORAGE_PATH
+    value: "/opt/airflow/bundle_storage"
+  
+  # Git environment variables (required by GitPython)
+  - name: GIT_PYTHON_GIT_EXECUTABLE
+    value: "/usr/bin/git"
+  - name: GIT_PYTHON_REFRESH
+    value: "quiet"
+  
+  # Kafka configuration
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    value: "kafka.default.svc.cluster.local:9092"
+  - name: KAFKA_TOPIC_MARKET_DATA
+    value: "Market_Data"
+  
+  # Azure DevOps PAT for Git connection (via K8s secret)
+  - name: AZURE_DEVOPS_PAT
+    valueFrom:
+      secretKeyRef:
+        name: airflow-secrets
+        key: AZURE_DEVOPS_PAT
+  
+  # Snowflake connection (via K8s secret)
+  - name: SNOWFLAKE_CONN_ID
+    valueFrom:
+      secretKeyRef:
+        name: airflow-secrets
+        key: snowflake-conn-id
+  
+  # Azure credentials (via K8s secret)
+  - name: AZURE_DATA_LAKE_CONN_ID
+    valueFrom:
+      secretKeyRef:
+        name: airflow-secrets
+        key: azure-data-lake-conn-id
+
+# ==============================================================================
+# AIRFLOW CONNECTIONS
+# ==============================================================================
+# Git connection for GitDagBundle authentication
+# GitHub public repo - no authentication needed, but can use PAT for private repos
+connections:
+  - conn_id: github_configs
+    conn_type: git
+    host: https://github.com/prajayrajsinghrathore/AirrflowConfigBundle.git
+    login: ""  # Empty for public repos
+    password: ""  # Use ${GITHUB_PAT} if repo is private
+    extra: |
+      {
+        "git_executable": "/usr/bin/git"
+      }
+
+# ==============================================================================
+# SECRETS CONFIGURATION
+# ==============================================================================
+# Create K8s secret for Azure DevOps PAT:
+# kubectl create secret generic airflow-secrets \
+#   --from-literal=AZURE_DEVOPS_PAT=<your-pat-token>
+
+extraSecrets:
+  airflow-secrets:
+    data:
+      AZURE_DEVOPS_PAT: <base64-encoded-pat>
+
+# ==============================================================================
+# PERSISTENT VOLUMES
+# ==============================================================================
+# Bundle storage needs persistent volume for caching Git checkouts
+persistence:
+  enabled: true
+  existingClaim: airflow-bundle-storage-pvc  # Pre-created PVC
+  storageClassName: managed-premium  # Azure managed premium SSD
+  size: 20Gi
+  accessMode: ReadWriteMany  # For multi-pod access
+
+# Additional volume for bundle storage
+extraVolumes:
+  - name: bundle-storage
+    persistentVolumeClaim:
+      claimName: airflow-bundle-storage-pvc
+
+extraVolumeMounts:
+  - name: bundle-storage
+    mountPath: /opt/airflow/bundle_storage
+
+# ==============================================================================
+# SCHEDULER CONFIGURATION
+# ==============================================================================
+scheduler:
+  replicas: 2  # HA scheduler for production
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  
+  # DAG parsing configuration
+  extraEnv:
+    - name: AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL
+      value: "60"  # Scan for DAG files every 60s
+    - name: AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL
+      value: "30"  # Min time between re-parsing a DAG
+
+# ==============================================================================
+# WEBSERVER CONFIGURATION (ISTIO Integration)
+# ==============================================================================
+webserver:
+  replicas: 2
+  service:
+    type: ClusterIP  # ISTIO gateway will handle external access
+    annotations:
+      # ISTIO sidecar injection
+      sidecar.istio.io/inject: "true"
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+# ==============================================================================
+# WORKER CONFIGURATION
+# ==============================================================================
+workers:
+  replicas: 3
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  
+  # Celery worker configuration
+  celery:
+    instances: 2
+
+# ==============================================================================
+# TENANT-SPECIFIC RESOURCE POOLS
+# ==============================================================================
+# Pools are created via global_settings.yaml, referenced here for documentation
+# operations_pool: 32 slots
+# reporting_pool: 16 slots
+# esg_pool: 8 slots
+# shared_pool: 32 slots
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logs:
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: managed-premium
+
+# ==============================================================================
+# POSTGRESQL (Metadata Database)
+# ==============================================================================
+postgresql:
+  enabled: true
+  auth:
+    username: airflow
+    password: <use-k8s-secret>
+    database: airflow
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: managed-premium
+
+# ==============================================================================
+# ISTIO GATEWAY & VIRTUALSERVICE (Applied separately)
+# ==============================================================================
+# apiVersion: networking.istio.io/v1beta1
+# kind: Gateway
+# metadata:
+#   name: airflow-gateway
+# spec:
+#   selector:
+#     istio: ingressgateway
+#   servers:
+#     - port:
+#         number: 80
+#         name: http
+#         protocol: HTTP
+#       hosts:
+#         - "airflow.yourdomain.com"
+# ---
+# apiVersion: networking.istio.io/v1beta1
+# kind: VirtualService
+# metadata:
+#   name: airflow-vs
+# spec:
+#   hosts:
+#     - "airflow.yourdomain.com"
+#   gateways:
+#     - airflow-gateway
+#   http:
+#     - match:
+#         - uri:
+#             prefix: /
+#       route:
+#         - destination:
+#             host: airflow-webserver
+#             port:
+#               number: 8080
+
+# ==============================================================================
+# RBAC
+# ==============================================================================
+rbac:
+  create: true
+  createSCCRoleBinding: false  # Not needed for AKS
+
+# ==============================================================================
+# SERVICE ACCOUNT
+# ==============================================================================
+serviceAccount:
+  create: true
+  name: airflow
+  annotations:
+    # Azure managed identity for accessing ACR
+    azure.workload.identity/client-id: "<workload-identity-client-id>"
+
+# ==============================================================================
+# MONITORING & OBSERVABILITY
+# ==============================================================================
+# Metrics exported via statsd exporter for Grafana
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: "30s"

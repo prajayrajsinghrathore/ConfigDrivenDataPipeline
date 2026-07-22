@@ -1,0 +1,14 @@
+apiVersion: v2
+name: rlam-airflow-pipeline
+description: RLAM Config-Driven Data Pipeline with Apache Airflow 3.1.6
+type: application
+version: 1.0.0
+appVersion: "3.1.6"
+keywords:
+  - airflow
+  - data-pipeline
+  - config-driven
+  - dag-bundles
+home: https://dev.azure.com/rlam/data-platform
+maintainers:
+  - name: RLAM Data Platform Team
