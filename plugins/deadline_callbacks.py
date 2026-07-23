@@ -31,6 +31,7 @@ import json
 import os
 import structlog
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -43,38 +44,56 @@ from airflow.sdk import Connection
 log = structlog.get_logger(__name__)
 
 
-def _dag_run_field(dag_run: Any, field: str) -> Any:
-    """Read a field from the callback context's dag_run.
+@dataclass(frozen=True)
+class DeadlineContext:
+    """Typed view of the deadline-callback context, normalized ONCE at the boundary.
 
     Verified against the real Airflow 3.3.0 SyncCallback payload (2026-07-23):
     `context['dag_run']` arrives as a plain dict (keys: dag_id, logical_date,
-    queued_at, ...), while unit tests and older call sites may pass an object
-    with attributes. Support both.
+    queued_at, ...) and `deadline.deadline_time` as an ISO-8601 string with a
+    trailing 'Z'. Unit tests and older call sites may pass attribute-style
+    objects and datetimes instead. All that tolerance lives HERE — notifier
+    internals only ever see this dataclass.
     """
-    if dag_run is None:
-        return None
-    if isinstance(dag_run, dict):
-        return dag_run.get(field)
-    return getattr(dag_run, field, None)
 
+    dag_id: str
+    logical_date: Any
+    queued_at: Any
+    deadline_time: Optional[datetime]
+    reference: str
 
-def _parse_datetime(value: Any) -> Optional[datetime]:
-    """Coerce a deadline timestamp to an aware datetime.
+    @classmethod
+    def from_context(cls, context: Dict[str, Any]) -> "DeadlineContext":
+        dag_run = context.get("dag_run")
+        deadline_info = context.get("deadline") or {}
+        return cls(
+            dag_id=cls._field(dag_run, "dag_id") or "unknown",
+            logical_date=cls._field(dag_run, "logical_date"),
+            queued_at=cls._field(dag_run, "queued_at"),
+            deadline_time=cls._parse_datetime(deadline_info.get("deadline_time")),
+            reference=deadline_info.get("reference", "dagrun_queued"),
+        )
 
-    The real 3.3.0 callback payload carries `deadline.deadline_time` as an ISO
-    string (e.g. '2026-07-23T13:26:09.360833Z'); tests may pass datetimes.
-    Returns None when unparseable.
-    """
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-    except (ValueError, TypeError):
-        log.warning("Could not parse deadline_time", value=str(value))
-        return None
+    @staticmethod
+    def _field(dag_run: Any, field: str) -> Any:
+        if dag_run is None:
+            return None
+        if isinstance(dag_run, dict):
+            return dag_run.get(field)
+        return getattr(dag_run, field, None)
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if value is None or isinstance(value, datetime):
+            return value
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except (ValueError, TypeError):
+            log.warning("Could not parse deadline_time", value=str(value))
+            return None
 
 # =============================================================================
 # CENTRALIZED TIMEOUT CONFIGURATION
@@ -270,15 +289,12 @@ class KafkaDeadlineNotifier(BaseNotifier):
         Args:
             context: Airflow callback context containing dag_run, task, etc.
         """
-        dag_run = context.get("dag_run")
-        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
-        logical_date = _dag_run_field(dag_run, "logical_date")
-        queued_at = _dag_run_field(dag_run, "queued_at")
-
-        # Extract deadline information
-        deadline_info = context.get("deadline", {})
-        deadline_time = _parse_datetime(deadline_info.get("deadline_time"))
-        reference = deadline_info.get("reference", "dagrun_queued")
+        ctx = DeadlineContext.from_context(context)
+        dag_id = ctx.dag_id
+        logical_date = ctx.logical_date
+        queued_at = ctx.queued_at
+        deadline_time = ctx.deadline_time
+        reference = ctx.reference
 
         # Calculate how late the run is
         late_by_seconds = None
@@ -384,13 +400,10 @@ class EmailDeadlineNotifier(BaseNotifier):
 
         from airflow.utils.email import send_email
 
-        dag_run = context.get("dag_run")
-        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
-        logical_date = _dag_run_field(dag_run, "logical_date")
-
-        # Extract deadline information
-        deadline_info = context.get("deadline", {})
-        deadline_time = deadline_info.get("deadline_time")
+        ctx = DeadlineContext.from_context(context)
+        dag_id = ctx.dag_id
+        logical_date = ctx.logical_date
+        deadline_time = ctx.deadline_time
 
         # Build default subject and content if not provided
         subject = self.subject or f"🚨 Deadline Alert: {dag_id}"
@@ -485,8 +498,7 @@ class CompositeDeadlineNotifier(BaseNotifier):
         Args:
             context: Airflow callback context
         """
-        dag_run = context.get("dag_run")
-        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
+        dag_id = DeadlineContext.from_context(context).dag_id
 
         log.info(
             "Processing deadline alert", dag_id=dag_id, email_enabled=self.email_enabled

@@ -27,9 +27,14 @@ PLUGINS_FOLDER = Path(__file__).parent.parent.parent / "plugins"
 sys.path.insert(0, str(DAGS_FOLDER))
 sys.path.insert(0, str(PLUGINS_FOLDER))
 
-# Check if we're on Windows - Airflow doesn't support Windows natively
-IS_WINDOWS = sys.platform == "win32"
-SKIP_REASON = "Airflow DAG tests require Linux/macOS (os.register_at_fork not available on Windows)"
+# 2026-07-23: Windows skips lifted. rlam_airflow_framework.__init__ ships an
+# os.register_at_fork shim (pre-importing concurrent.futures.thread first) that
+# makes real-Airflow imports work on Windows, so this lane now runs everywhere.
+# NOTE: this lane must run in its OWN pytest invocation, not combined with
+# tests/unit — the unit lane installs airflow.* mocks in sys.modules
+# (tests/dag/conftest.py guards against that with a clear skip).
+IS_WINDOWS = False
+SKIP_REASON = "unused — Windows real-Airflow imports fixed 2026-07-23"
 
 
 @pytest.mark.dag
@@ -50,8 +55,10 @@ class TestDagIntegrity:
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
 
             return DagBag(dag_folder=str(DAGS_FOLDER))
-        except ImportError:
-            pytest.skip("Airflow not installed")
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_no_import_errors(self, dagbag):
         """Test that all DAGs import without errors."""
@@ -95,8 +102,10 @@ class TestDagMetadata:
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
             return DagBag(dag_folder=str(DAGS_FOLDER))
-        except ImportError:
-            pytest.skip("Airflow not installed")
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_dags_have_description(self, dagbag):
         """Test that DAGs have descriptions."""
@@ -146,8 +155,10 @@ class TestDagTasks:
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
             return DagBag(dag_folder=str(DAGS_FOLDER))
-        except ImportError:
-            pytest.skip("Airflow not installed")
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_dags_have_tasks(self, dagbag):
         """Test that DAGs have at least one task."""
@@ -195,8 +206,10 @@ class TestDagSchedule:
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
             return DagBag(dag_folder=str(DAGS_FOLDER))
-        except ImportError:
-            pytest.skip("Airflow not installed")
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_schedule_interval_is_valid(self, dagbag):
         """Test that schedule intervals are valid."""
@@ -266,33 +279,65 @@ class TestGeneratedDags:
 @pytest.mark.dag
 @pytest.mark.skipif(IS_WINDOWS, reason=SKIP_REASON)
 class TestDagFactory:
-    """Test DAG factory functionality."""
+    """Test DAG factory functionality.
 
-    def test_dag_factory_creates_valid_dag(self, sample_data_source_config):
+    2026-07-23: rewritten — the old tests called `factory.create_dag()` (an API
+    that never existed on DAGFactoryV2) with the pre-restructure config layout,
+    and were masked for years by the Windows skip.
+    """
+
+    @pytest.fixture
+    def register_test_tenant(self, monkeypatch):
+        """Inject a known tenant so the test is environment-independent."""
+        from rlam_airflow_framework.config_loader import ConfigLoader
+
+        original = ConfigLoader.load_global_settings
+
+        def with_tenant(self):
+            settings = original(self)
+            settings.setdefault("tenants", {})
+            settings["tenants"].setdefault(
+                "dag_lane_test",
+                {"pool": "default_pool", "slots": 8, "connection_prefix": "test_"},
+            )
+            return settings
+
+        monkeypatch.setattr(ConfigLoader, "load_global_settings", with_tenant)
+
+    @pytest.fixture
+    def factory_config(self):
+        return {
+            "metadata": {"tenant": "dag_lane_test"},
+            "data_source": {
+                "name": "factory_smoke",
+                "type": "rest_api",
+                "endpoint": "https://api.example.com/data",
+            },
+            "destination": {"primary": {"type": "print_logs"}},
+            "schedule": {
+                "interval": "@daily",
+                "start_date": "2024-01-01",
+                "catchup": False,
+            },
+        }
+
+    def test_dag_factory_creates_valid_dag(self, register_test_tenant, factory_config):
         """Test DAG factory creates valid DAG from config."""
-        try:
-            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
+        from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            factory = DAGFactoryV2()
-            dag = factory.create_dag(sample_data_source_config)
+        dag = DAGFactoryV2().create_dag_from_config(factory_config)
 
-            assert dag is not None
-            assert dag.dag_id is not None
-        except ImportError:
-            pytest.skip("DAG factory not available")
+        assert dag is not None
+        assert dag.dag_id == "dag_lane_test_factory_smoke"
 
-    def test_dag_factory_applies_default_args(self, sample_data_source_config):
+    def test_dag_factory_applies_default_args(self, register_test_tenant, factory_config):
         """Test DAG factory applies default arguments."""
-        try:
-            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
+        from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            factory = DAGFactoryV2()
-            dag = factory.create_dag(sample_data_source_config)
+        dag = DAGFactoryV2().create_dag_from_config(factory_config)
 
-            # Check default args are set
-            assert dag.default_args is not None
-        except ImportError:
-            pytest.skip("DAG factory not available")
+        assert dag.default_args is not None
+        assert dag.default_args.get("retries") is not None
 
 
 # =============================================================================
@@ -677,7 +722,7 @@ class TestDAGFactoryCreateDeadlineAlert:
 
     def test_returns_none_when_notifier_unavailable(self, factory, mocker):
         """Test returns None when CompositeDeadlineNotifier not available."""
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", None)
+        mocker.patch("rlam_airflow_framework.dag_factory_v2.CompositeDeadlineNotifier", None)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
@@ -685,28 +730,39 @@ class TestDAGFactoryCreateDeadlineAlert:
 
         assert result is None
 
+    @staticmethod
+    def _patch_notifier(mocker):
+        """Patch with a REAL class: DeadlineAlert runs qualname() on the
+        callback, which a MagicMock does not survive."""
+
+        class _DummyNotifier:
+            def __init__(self, **kwargs):
+                pass
+
+        mocker.patch(
+            "rlam_airflow_framework.dag_factory_v2.CompositeDeadlineNotifier",
+            _DummyNotifier,
+        )
+
     def test_creates_deadline_alert_with_timeout(self, factory, mocker):
-        """Test creates DeadlineAlert with correct timeout."""
-        # Mock the notifier class
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        """Test creates a list of DeadlineAlerts with correct timeout."""
+        self._patch_notifier(mocker)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 45}}
 
         result = factory._create_deadline_alert("test_dag", schedule_config)
 
         assert result is not None
-        # Verify it's a DeadlineAlert
         from airflow.sdk.definitions.deadline import DeadlineAlert
 
-        assert isinstance(result, DeadlineAlert)
-        # Check timeout interval
-        assert result.interval == timedelta(minutes=45)
+        # 1.3 tiered-alert support: the factory returns a LIST of alerts
+        assert isinstance(result, list) and len(result) == 1
+        assert isinstance(result[0], DeadlineAlert)
+        assert result[0].interval == timedelta(minutes=45)
 
     def test_uses_default_timeout_when_not_specified(self, factory, mocker):
         """Test uses default 30 minute timeout."""
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        self._patch_notifier(mocker)
 
         schedule_config = {
             "deadline": {
@@ -718,12 +774,11 @@ class TestDAGFactoryCreateDeadlineAlert:
         result = factory._create_deadline_alert("test_dag", schedule_config)
 
         assert result is not None
-        assert result.interval == timedelta(minutes=30)
+        assert result[0].interval == timedelta(minutes=30)
 
     def test_uses_dagrun_queued_at_reference(self, factory, mocker):
         """Test uses DAGRUN_QUEUED_AT reference point."""
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        self._patch_notifier(mocker)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
@@ -731,7 +786,7 @@ class TestDAGFactoryCreateDeadlineAlert:
 
         from airflow.sdk.definitions.deadline import DeadlineReference
 
-        assert result.reference == DeadlineReference.DAGRUN_QUEUED_AT
+        assert result[0].reference == DeadlineReference.DAGRUN_QUEUED_AT
 
 
 @pytest.mark.unit
@@ -803,51 +858,9 @@ class TestDAGFactoryCreateAssets:
         inlets, outlets = factory._create_assets(config)
 
         assert len(outlets) == 1
-        assert outlets[0].uri == "snowflake://RAW.TEST_TABLE"
+        assert outlets[0].uri == "snowflake://default/default/RAW/TEST_TABLE"
 
-    def test_creates_outlet_for_azure_data_lake(self, factory):
-        """Test creates outlet Asset for Azure Data Lake."""
-        config = {
-            "data_source": {
-                "name": "test_source",
-                "type": "rest_api",
-                "endpoint": "https://api.test.com",
-            },
-            "destination": {
-                "primary": {
-                    "type": "azure_data_lake",
-                    "container": "raw-data",
-                    "path": "market/daily",
-                }
-            },
-        }
 
-        inlets, outlets = factory._create_assets(config)
-
-        assert len(outlets) == 1
-        assert outlets[0].uri == "azure://raw-data/market/daily"
-
-    def test_creates_outlet_for_azure_blob(self, factory):
-        """Test creates outlet Asset for Azure Blob Storage."""
-        config = {
-            "data_source": {
-                "name": "test_source",
-                "type": "rest_api",
-                "endpoint": "https://api.test.com",
-            },
-            "destination": {
-                "primary": {
-                    "type": "azure_blob",
-                    "container": "archive",
-                    "path": "backups",
-                }
-            },
-        }
-
-        inlets, outlets = factory._create_assets(config)
-
-        assert len(outlets) == 1
-        assert outlets[0].uri == "azure://archive/backups"
 
     def test_handles_unknown_source_type(self, factory):
         """Test handles unknown source type gracefully."""

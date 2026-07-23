@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # Global ARGs - available in FROM instructions
-ARG AIRFLOW_BASE_IMAGE=dhi.io/airflow:3-debian-dev
+# Base pinned by DIGEST for reproducible builds: the 3-debian-dev tag floats
+# across 3.x releases, so an unpinned rebuild could silently change the Airflow
+# version out from under constraints.txt. This digest is the 3-debian-dev that
+# shipped Airflow 3.3.0 / Python 3.13 (validated 2026-07-23).
+# To upgrade deliberately: pull the new tag, re-resolve constraints, update the
+# digest here. TODO(acr): switch to the ACR mirror once the 3.3.0 image is
+# mirrored, and pin that by digest too.
+ARG AIRFLOW_BASE_IMAGE=dhi.io/airflow@sha256:676bd254f2873951f32074002dfb0c0f013084a7b94d68c8b99a6b9b0a37231e
 ARG PYTHON_VERSION=3.13
 ARG USE_ZSCALER_CERT=false
 
@@ -79,10 +86,12 @@ USER airflow
 
 # PYTHONDONTWRITEBYTECODE=1: Disable bytecode generation at runtime (already pre-compiled)
 # PYTHONUNBUFFERED=1: Unbuffered output for better logging
-# PYTHONOPTIMIZE=1: Optimize Python for production
+# NOTE: PYTHONOPTIMIZE deliberately NOT set (removed 2026-07-23). Its marginal
+# benefit is stripping asserts/docstrings, but it silently disabled library
+# assert statements for any pytest run inside the container, weakening the
+# in-container test lanes.
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONOPTIMIZE=1
+    PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD airflow db check || exit 1

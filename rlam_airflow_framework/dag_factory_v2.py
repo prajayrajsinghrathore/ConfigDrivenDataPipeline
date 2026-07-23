@@ -667,8 +667,26 @@ Please review the quarantined records.
         dest_type = primary_dest.get("type", "unknown")
 
         if dest_type == "snowflake_table":
-            table = primary_dest.get("table", "unknown")
-            outlet_uri = f"snowflake://{table}"
+            # AIP-60 snowflake URI: snowflake://<account>/<database>/<schema>/<table>.
+            # The snowflake provider's URI normalizer hard-rejects anything else at
+            # Asset construction (i.e. at DAG-parse time), so a bare
+            # f"snowflake://{table}" broke every snowflake-sink pipeline on real
+            # Airflow 3.3 (caught 2026-07-23 when the dag lane ran unmocked).
+            # Explicit fields win; dotted table refs (DB.SCHEMA.TABLE) fill the
+            # rest; placeholders keep parse-time construction DB-free.
+            table_ref = str(primary_dest.get("table", "unknown"))
+            parts = table_ref.split(".")
+            table = parts[-1]
+            schema = primary_dest.get("schema") or (
+                parts[-2] if len(parts) > 1 else "default"
+            )
+            database = primary_dest.get("database") or (
+                parts[-3] if len(parts) > 2 else "default"
+            )
+            account = (
+                primary_dest.get("account") or primary_dest.get("conn_id") or "default"
+            )
+            outlet_uri = f"snowflake://{account}/{database}/{schema}/{table}"
         elif dest_type == "object_storage":
             uri = primary_dest.get("uri", "")
             path = primary_dest.get("path", "")

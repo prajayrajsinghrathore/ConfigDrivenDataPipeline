@@ -553,3 +553,63 @@ class TestDataSourceSchemaDeadlineValidation:
                     assert field in hitl, (
                         f"{config_file.name}: hitl.{field} missing when enabled"
                     )
+
+
+class TestNoUnknownTopLevelKeys:
+    """Reject unknown top-level keys in every pipeline config.
+
+    Guards against dead configuration: the factory only reads the keys listed
+    below, so anything else (a typo like `deadine:`, or legacy-layout leftovers
+    such as top-level `retries:`/`data_quality_checks:`) validates silently and
+    does NOTHING. This class of bug shipped twice before this test existed
+    (financial_operations_v2's top-level hitl/deadline/retry; joke_api_test's
+    entire legacy DQ/transformation config). Extend ALLOWED_TOP_LEVEL_KEYS only
+    when the factory actually starts reading a new key.
+    """
+
+    # Keys consumed by dag_factory_v2 / taskflow_tasks / config_loader.
+    # NOTE: `authentication` is documented in the schema but read nowhere —
+    # deliberately excluded until implemented.
+    ALLOWED_TOP_LEVEL_KEYS = {
+        "metadata",
+        "data_source",
+        "schedule",
+        "destination",
+        "validation",
+        "partition",
+        "incremental",
+        "transformation",
+        "event",
+    }
+
+    @pytest.fixture
+    def config_files(self):
+        data_sources = Path(__file__).parent.parent.parent / "config" / "data_sources"
+        return sorted(data_sources.glob("*.yaml"))
+
+    def test_no_unknown_top_level_keys(self, config_files):
+        problems = []
+        for config_file in config_files:
+            with open(config_file) as f:
+                config = yaml.safe_load(f)
+            unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
+            if unknown:
+                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+        assert not problems, (
+            "Unknown top-level keys are dead configuration (the factory never reads them):\n"
+            + "\n".join(problems)
+        )
+
+    def test_fixture_configs_have_no_unknown_top_level_keys(self):
+        """Same guard for test fixtures so examples stay honest."""
+        fixtures = Path(__file__).parent.parent / "fixtures"
+        problems = []
+        for config_file in sorted(fixtures.glob("*.yaml")):
+            with open(config_file) as f:
+                config = yaml.safe_load(f)
+            if not isinstance(config, dict):
+                continue
+            unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
+            if unknown:
+                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+        assert not problems, "\n".join(problems)

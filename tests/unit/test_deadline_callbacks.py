@@ -70,32 +70,35 @@ REAL_CALLBACK_CONTEXT = {
 }
 
 
-class TestDagRunFieldAccessor:
-    def test_dict_payload(self, dc):
-        assert dc._dag_run_field(REAL_CALLBACK_CONTEXT["dag_run"], "dag_id") == "sandbox_deadline_probe"
+class TestDeadlineContextAdapter:
+    """DeadlineContext normalizes the callback payload once at the boundary."""
+
+    def test_real_dict_payload(self, dc):
+        ctx = dc.DeadlineContext.from_context(dict(REAL_CALLBACK_CONTEXT))
+        assert ctx.dag_id == "sandbox_deadline_probe"
+        assert ctx.deadline_time == datetime(
+            2026, 7, 23, 13, 26, 9, 360833, tzinfo=timezone.utc
+        )
+        assert ctx.reference == "dagrun_queued"
 
     def test_object_payload(self, dc):
-        run = SimpleNamespace(dag_id="my_dag")
-        assert dc._dag_run_field(run, "dag_id") == "my_dag"
+        ctx = dc.DeadlineContext.from_context(
+            {"dag_run": SimpleNamespace(dag_id="my_dag"), "deadline": {}}
+        )
+        assert ctx.dag_id == "my_dag"
+        assert ctx.deadline_time is None
 
-    def test_missing_field_and_none(self, dc):
-        assert dc._dag_run_field({}, "dag_id") is None
-        assert dc._dag_run_field(SimpleNamespace(), "dag_id") is None
-        assert dc._dag_run_field(None, "dag_id") is None
+    def test_missing_everything(self, dc):
+        ctx = dc.DeadlineContext.from_context({})
+        assert ctx.dag_id == "unknown"
+        assert ctx.logical_date is None
+        assert ctx.deadline_time is None
 
-
-class TestParseDatetime:
-    def test_iso_string_with_z_suffix(self, dc):
-        parsed = dc._parse_datetime("2026-07-23T13:26:09.360833Z")
-        assert parsed == datetime(2026, 7, 23, 13, 26, 9, 360833, tzinfo=timezone.utc)
-
-    def test_datetime_passthrough(self, dc):
+    def test_datetime_passthrough_and_garbage(self, dc):
         now = datetime.now(timezone.utc)
-        assert dc._parse_datetime(now) is now
-
-    def test_none_and_garbage(self, dc):
-        assert dc._parse_datetime(None) is None
-        assert dc._parse_datetime("not-a-date") is None
+        assert dc.DeadlineContext._parse_datetime(now) is now
+        assert dc.DeadlineContext._parse_datetime(None) is None
+        assert dc.DeadlineContext._parse_datetime("not-a-date") is None
 
 
 class TestCompositeNotifierRealPayload:

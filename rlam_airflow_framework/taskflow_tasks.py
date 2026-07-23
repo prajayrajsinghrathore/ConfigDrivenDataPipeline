@@ -864,12 +864,20 @@ def load_data(
                     "Saved watermark to Airflow Variable", watermark=new_watermark
                 )
 
-        # Emit standard OpenLineage dataset for observability
+        # Emit standard OpenLineage dataset for observability.
+        # partition_key rides along so the "data landed" event is traceable to
+        # its partition (closes the gap left by the 2A.4.2 ingest-only threading).
         kafka_publisher.publish_data(
             dag_id=dag_id,
             data=df.to_dict(orient="records"),
             topic=topic,
             status="success",
+            correlation_id=correlation_id,
+            metadata=(
+                {"partition_key": partition_value}
+                if partition_value is not None
+                else None
+            ),
         )
 
         return summary

@@ -339,6 +339,7 @@ class KafkaEventPublisher:
         status: str = "success",
         correlation_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Publish data to Kafka with circuit breaker protection and optional tenant namespacing.
@@ -383,6 +384,8 @@ class KafkaEventPublisher:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "correlation_id": trace_id,
                 "tenant_id": tenant_id,  # Include tenant in message for downstream consumers
+                # Traceability metadata (e.g. partition_key) for downstream consumers
+                "metadata": metadata or {},
             }, default=str)
 
             # Reset delivery event and result
