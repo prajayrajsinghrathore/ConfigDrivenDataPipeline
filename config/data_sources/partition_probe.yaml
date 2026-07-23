@@ -5,6 +5,7 @@
 metadata:
   tenant: sandbox
   description: "Partition e2e probe: runtime-assigned partitions against mock API"
+  rerun_with_latest_version: true
 data_source:
   name: partition_probe
   type: rest_api
