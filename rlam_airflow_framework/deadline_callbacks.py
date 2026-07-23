@@ -1,17 +1,20 @@
-# File: plugins/deadline_callbacks.py
+# File: rlam_airflow_framework/deadline_callbacks.py
 """
-Airflow 3.1.x Deadline Alert Notifiers.
+Airflow 3.3.0 Deadline Alert Notifiers.
 
 Provides custom notifiers for deadline alerts:
 - KafkaDeadlineNotifier: Always publishes deadline violations to Kafka
 - EmailDeadlineNotifier: Optional email notifications based on config
 - CompositeDeadlineNotifier: Combines Kafka (always) + Email (configurable)
 
-This plugin is SELF-CONTAINED and does not depend on dags/utils.
+These are plain notifier classes the DAG factory instantiates directly — NOT
+an Airflow plugin (no AirflowPlugin registration). They live in the framework
+package (moved out of a misleading `plugins/` folder 2026-07-23) so they ship
+baked into the image, with no volume-mount / sys.path dependency.
 
 Usage in DAG:
     from airflow.sdk.definitions.deadline import AsyncCallback, DeadlineAlert, DeadlineReference
-    from plugins.deadline_callbacks import CompositeDeadlineNotifier
+    from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
     deadline = DeadlineAlert(
         reference=DeadlineReference.DAGRUN_QUEUED_AT,

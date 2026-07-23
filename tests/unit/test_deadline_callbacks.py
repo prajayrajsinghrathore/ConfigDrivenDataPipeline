@@ -1,6 +1,6 @@
 # File: tests/unit/test_deadline_callbacks.py
 """
-Unit tests for plugins/deadline_callbacks.py context handling.
+Unit tests for rlam_airflow_framework/deadline_callbacks.py context handling.
 
 The payload fixture below mirrors the REAL Airflow 3.3.0 SyncCallback context
 observed on the live stack (2026-07-23): `dag_run` is a plain dict and
@@ -24,7 +24,11 @@ from unittest.mock import patch
 
 import pytest
 
-PLUGINS_DIR = Path(__file__).resolve().parents[2] / "plugins"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "rlam_airflow_framework"
+    / "deadline_callbacks.py"
+)
 
 
 class _StubBaseNotifier:
@@ -42,7 +46,7 @@ def dc():
     sdk_mock.BaseNotifier = _StubBaseNotifier
     try:
         spec = importlib.util.spec_from_file_location(
-            "deadline_callbacks_real", PLUGINS_DIR / "deadline_callbacks.py"
+            "deadline_callbacks_real", MODULE_PATH
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

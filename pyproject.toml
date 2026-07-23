@@ -95,4 +95,4 @@ markers = [
 ]
 
 [tool.pyright]
-extraPaths = ["plugins"]
+extraPaths = []

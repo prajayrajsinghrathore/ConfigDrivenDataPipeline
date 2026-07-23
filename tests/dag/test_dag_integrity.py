@@ -23,9 +23,7 @@ from unittest.mock import MagicMock
 
 # Add the dags folder to the path
 DAGS_FOLDER = Path(__file__).parent.parent.parent / "dags"
-PLUGINS_FOLDER = Path(__file__).parent.parent.parent / "plugins"
 sys.path.insert(0, str(DAGS_FOLDER))
-sys.path.insert(0, str(PLUGINS_FOLDER))
 
 # 2026-07-23: Windows skips lifted. rlam_airflow_framework.__init__ ships an
 # os.register_at_fork shim (pre-importing concurrent.futures.thread first) that
@@ -356,14 +354,14 @@ class TestKafkaDeadlineNotifier:
     def mock_kafka_publisher(self, mocker):
         """Mock kafka_publisher for notifier tests."""
         # Need to mock at the module level where it's imported
-        mock = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock.publish_event.return_value = True
         return mock
 
     @pytest.fixture
     def notifier(self):
         """Create KafkaDeadlineNotifier instance."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         return KafkaDeadlineNotifier(topic="test-alerts", message="Test deadline alert")
 
@@ -385,7 +383,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_init_with_defaults(self):
         """Test initialization with default values."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         notifier = KafkaDeadlineNotifier()
 
@@ -394,7 +392,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_init_with_custom_topic(self):
         """Test initialization with custom topic."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         notifier = KafkaDeadlineNotifier(topic="custom-alerts")
 
@@ -402,7 +400,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_template_fields_defined(self):
         """Test template fields for Jinja rendering."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         assert "message" in KafkaDeadlineNotifier.template_fields
         assert "topic" in KafkaDeadlineNotifier.template_fields
@@ -442,7 +440,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_notify_handles_kafka_failure(self, notifier, mock_context, mocker):
         """Test notify handles Kafka publish failure."""
-        mock_kafka = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock_kafka.publish_event.side_effect = Exception("Connection failed")
 
         # Should not raise, just log error
@@ -457,7 +455,7 @@ class TestEmailDeadlineNotifier:
     @pytest.fixture
     def notifier_with_recipients(self):
         """Create EmailDeadlineNotifier with recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         return EmailDeadlineNotifier(
             recipients=["test@example.com", "alerts@example.com"], subject="Test Alert"
@@ -466,7 +464,7 @@ class TestEmailDeadlineNotifier:
     @pytest.fixture
     def notifier_without_recipients(self):
         """Create EmailDeadlineNotifier without recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         return EmailDeadlineNotifier()
 
@@ -486,7 +484,7 @@ class TestEmailDeadlineNotifier:
 
     def test_init_with_recipients(self):
         """Test initialization with email recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         notifier = EmailDeadlineNotifier(recipients=["a@test.com", "b@test.com"])
 
@@ -495,7 +493,7 @@ class TestEmailDeadlineNotifier:
 
     def test_init_without_recipients(self):
         """Test initialization without recipients defaults to empty list."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         notifier = EmailDeadlineNotifier()
 
@@ -503,7 +501,7 @@ class TestEmailDeadlineNotifier:
 
     def test_template_fields_defined(self):
         """Test template fields for Jinja rendering."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         assert "recipients" in EmailDeadlineNotifier.template_fields
         assert "subject" in EmailDeadlineNotifier.template_fields
@@ -558,7 +556,7 @@ class TestCompositeDeadlineNotifier:
     @pytest.fixture
     def mock_kafka_publisher(self, mocker):
         """Mock kafka_publisher."""
-        mock = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock.publish_event.return_value = True
         return mock
 
@@ -580,7 +578,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_init_creates_sub_notifiers(self):
         """Test initialization creates Kafka and Email sub-notifiers."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]
@@ -592,7 +590,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_init_with_email_disabled(self):
         """Test initialization with email disabled."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(email_enabled=False)
 
@@ -600,7 +598,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_notify_always_sends_kafka(self, mock_context, mock_kafka_publisher):
         """Test Kafka notification is ALWAYS sent."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts",
@@ -617,7 +615,7 @@ class TestCompositeDeadlineNotifier:
         """Test email is sent when enabled with recipients."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]
@@ -632,7 +630,7 @@ class TestCompositeDeadlineNotifier:
         """Test email is skipped when disabled."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=False, email_recipients=["test@example.com"]
@@ -647,7 +645,7 @@ class TestCompositeDeadlineNotifier:
         """Test warning logged when email enabled but no recipients."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts",
@@ -661,11 +659,11 @@ class TestCompositeDeadlineNotifier:
 
     def test_notify_continues_after_kafka_failure(self, mock_context, mocker):
         """Test email is still sent even if Kafka fails."""
-        mock_kafka = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock_kafka.publish_event.side_effect = Exception("Kafka down")
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]

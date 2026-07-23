@@ -53,7 +53,9 @@ x-airflow-common:
     - ../config:/opt/airflow/config:ro
     - ../tests:/opt/airflow/tests:ro
     - .:/opt/airflow/docker:ro
-    - ../plugins:/opt/airflow/plugins:ro
+    # NOTE: no plugins mount — deadline notifiers moved into the
+    # rlam_airflow_framework package (shipped in the image). /opt/airflow/plugins
+    # stays as Airflow's (empty) real-plugin folder for any future AirflowPlugin.
     # Development files for easy package management
     #- ../requirements.txt:/requirements.txt
     # Kubernetes file

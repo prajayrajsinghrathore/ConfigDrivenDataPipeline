@@ -16,8 +16,7 @@ import os
 import sys
 from unittest.mock import MagicMock
 
-# Add plugins to sys.path so tests can import from them
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../plugins')))
+# (plugins/ folder removed 2026-07-23 — deadline_callbacks now lives in the framework package)
 
 # =============================================================================
 # AIRFLOW MOCKING - Only for unit tests

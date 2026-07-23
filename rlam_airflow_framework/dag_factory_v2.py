@@ -70,8 +70,8 @@ from rlam_airflow_framework.health_checks import wait_for_kafka_health
 # Import tenant context for multi-tenancy support
 # Tenant context shim removed for clean break
 
-# Import deadline notifiers
-from deadline_callbacks import CompositeDeadlineNotifier
+# Import deadline notifiers (framework package — shipped in the image)
+from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
 log = structlog.get_logger(__name__)
 
