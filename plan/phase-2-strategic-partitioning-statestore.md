@@ -153,16 +153,16 @@ Set retention/GC and (optionally) `clear_on_success` defaults in [docker/airflow
 ---
 
 ## Phase 2 exit checklist
-- [ ] 2A.1 partitioning API verified against installed 3.3.0
-- [ ] 2A.2 `partition:` schema + contract tests
-- [ ] 2A.3 factory emits partitioned assets + correct mapper/timetable
-- [ ] 2A.4 ingest/load are partition-scoped for all source/sink types
-- [ ] 2A.5 partition-range reprocessing runbook
-- [ ] 2A.6 partitioning unit + Docker e2e green
-- [ ] 2B.1 state-store API verified
-- [ ] 2B.2 incremental watermarks (retry-safe) implemented
+- [x] 2A\.1\ partitioning\ API\ verified\ against\ installed\ 3\.3\.0
+- [x] 2A\.2\ `partition:`\ schema\ \+\ contract\ tests
+- [x] 2A\.3\ factory\ emits\ partitioned\ assets\ \+\ correct\ mapper/timetable
+- [x] 2A\.4\ ingest/load\ are\ partition\-scoped\ for\ all\ source/sink\ types
+- [x] 2A\.5\ partition\-range\ reprocessing\ runbook
+- [x] 2A\.6\ partitioning\ unit\ \+\ Docker\ e2e\ green
+- [x] 2B\.1\ state\-store\ API\ verified
+- [x] 2B\.2\ incremental\ watermarks\ \(retry\-safe\)\ implemented
 - [ ] 2B.3 DQ provenance as asset state
 - [ ] 2B.4 retention/GC config + db clean coverage
-- [ ] 2B.5 state-store unit + Docker e2e green
-- [ ] 2.C mocks/fixtures/docs updated; report status flipped
-- [ ] non-partitioned & non-incremental configs still pass unchanged
+- [x] 2B\.5\ state\-store\ unit\ \+\ Docker\ e2e\ green
+- [x] 2\.C\ mocks/fixtures/docs\ updated;\ report\ status\ flipped
+- [x] non\-partitioned\ \&\ non\-incremental\ configs\ still\ pass\ unchanged

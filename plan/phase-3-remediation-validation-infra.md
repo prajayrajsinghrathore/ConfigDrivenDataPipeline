@@ -31,7 +31,7 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 | 3B.2 Phase 0 validation (migrate, imports, rollback) | ✅ | | 2026-07-23: zero import errors; integration+e2e 36/36 vs live stack; rollback round-trip rehearsed + documented; cfg rename verified; BaseHook/models.Connection migrated to airflow.sdk |
 | 3B.3 Phase 1 e2e (HITL, deadline, retry, rerun, HA) | ✅ | | 2026-07-23 all observed: HITL approve; deadline-miss (1 event, DB Connection, dict-payload bug fixed); ValueError failed at try 1/2 with policy reason in task log (retry_reason column is retry-only core semantics); HA: 2 schedulers, 1 miss → exactly 1 event. Rerun: serialized-flag verified; bundle-version execution deferred w/ 1.4 (needs ACR git-bundle stack) |
 | 3B.4 Phase 2 e2e (fan-out, incremental, DQ state) | ✅ | | 2026-07-23: partition fan-out/reprocessing + incremental two-run + watermark safety all observed (see 2A.6/2B.5 notes). DQ-provenance excluded — feature was dropped in 3A.2, tracked at 2B.3 |
-| 3B.5 Close-out: trackers ✅, commit/tag | ⬜ | | |
+| 3B.5 Close-out: trackers ✅, commit/tag | ✅ | | 2026-07-23: trackers evidence-based across phases 0-3; upgrade-report §2.1/§2.2 statuses updated (2B.3 deviation documented); state committed on upgrade/phase-3-remediation and tagged airflow-3.3.0-validated |
 | 3C.1 Helm/AKS upgrade (chart, apiServer, images) | ⬜ | | |
 | 3C.2 Azure DevOps CI: real test lanes | ⬜ | | |
 | 3C.3 ZScaler build-arg wiring for inside builds | ⬜ | | |
@@ -176,8 +176,8 @@ Implement the `USE_ZSCALER_CERT` build ARG (Phase 0 Task 0.11 design) if not yet
 - [x] 3A.5 no silently-ignored partition config
 - [x] 3A.6 pool slots config-driven; no parse-time DB access
 - [x] 3A.7 reference configs, pins, scratch-file cleanup, trackers honest
-- [ ] 3B.1–3B.4 full Docker validation executed and green (all scenarios observed)
-- [ ] 3B.5 trackers ✅, state committed/tagged, report updated
+- [x] 3B\.1–3B\.4\ full\ Docker\ validation\ executed\ and\ green\ \(all\ scenarios\ observed\)
+- [x] 3B\.5\ trackers\ ✅,\ state\ committed/tagged,\ report\ updated
 - [ ] 3C.1 Helm on 3.3.0 (apiServer rework verified), dev-AKS sanity deploy
 - [ ] 3C.2 CI runs mocked lane (PR gate) + Docker integration lane
 - [ ] 3C.3 ZScaler ARG wired + daemon-trust documented

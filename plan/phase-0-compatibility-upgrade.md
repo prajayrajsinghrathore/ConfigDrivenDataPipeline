@@ -234,16 +234,16 @@ Create tickets for both before closing Phase 0.
 ---
 
 ## Phase 0 exit checklist
-- [ ] 0.1 deps resolved against 3.3.0 constraints (requirements.txt + pyproject.toml)
-- [ ] 0.2 serde migrated to `airflow.sdk.serde`
-- [ ] 0.3 import shims removed; tenant import path fixed
-- [ ] 0.4 auto-approve stub removed; HITL deferred honestly
-- [ ] 0.5 airflow.cfg / SMTP / deserialization reviewed
-- [ ] 0.6 unit mock registry updated
-- [ ] 0.7 tests fixed/added/removed; mocked lane green
-- [ ] 0.8 Docker migrate + integration/e2e green + zero import errors
-- [ ] 0.9 rollback rehearsal documented
+- [x] 0\.1\ deps\ resolved\ against\ 3\.3\.0\ constraints\ \(requirements\.txt\ \+\ pyproject\.toml\)
+- [x] 0\.2\ serde\ migrated\ to\ `airflow\.sdk\.serde`
+- [x] 0\.3\ import\ shims\ removed;\ tenant\ import\ path\ fixed
+- [x] 0\.4\ auto\-approve\ stub\ removed;\ HITL\ deferred\ honestly
+- [x] 0\.5\ airflow\.cfg\ /\ SMTP\ /\ deserialization\ reviewed
+- [x] 0\.6\ unit\ mock\ registry\ updated
+- [x] 0\.7\ tests\ fixed/added/removed;\ mocked\ lane\ green
+- [x] 0\.8\ Docker\ migrate\ \+\ integration/e2e\ green\ \+\ zero\ import\ errors
+- [x] 0\.9\ rollback\ rehearsal\ documented
 - [ ] 0.10 comments/docs de-staled
-- [ ] 0.11 local Docker stack on 3.3.0 (all components report 3.3.0)
-- [ ] 0.12 providers resolved + hook-usage audited + OpenLineage on correct package
+- [x] 0\.11\ local\ Docker\ stack\ on\ 3\.3\.0\ \(all\ components\ report\ 3\.3\.0\)
+- [x] 0\.12\ providers\ resolved\ \+\ hook\-usage\ audited\ \+\ OpenLineage\ on\ correct\ package
 - [ ] Deferred Helm & CI tickets created

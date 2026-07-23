@@ -45,6 +45,8 @@ Concretely available now:
 
 **Recommended adoption:** add an optional `partition:` block to the data-source config schema (e.g. `partition: {dimension: date, granularity: day}`), then in `_create_assets` emit partitioned assets and select a mapper based on config. This turns "reprocess one day" from a full-pipeline rerun into a targeted partition clear — a large efficiency and cost win for the Snowflake/ADLS sinks. **This is the single feature most worth planning a follow-up story around.**
 
+> **STATUS (2026-07-23): IMPLEMENTED & VALIDATED.** `partition:` config block, mapper selection, and partition-scoped ingest/load shipped (Phase 2A); validated live on the Docker stack — per-partition runs with scoped fetches, `clearPartitions` reprocessing of a single partition, and `partition_key` threaded into Kafka event metadata. See [plan/phase-2 tracker](plan/phase-2-strategic-partitioning-statestore.md).
+
 ### 2.2 Task & Asset State Store (AIP-103, 3.3.0 headline)
 
 **What the framework does today:** all inter-task state (valid/invalid DataFrames, DQ results, quarantine payloads, bundle metadata) flows through **XCom** using the custom pandas serializer ([serializers.py](rlam_airflow_framework/serializers.py)). Nothing survives cleanly across retries or across runs — e.g. an incremental "last successful watermark" has no first-class home.
@@ -55,6 +57,8 @@ Concretely available now:
 - Store **incremental-load watermarks** (high-water timestamps / IDs) in `task_state_store` so `rest_api`/`sftp` sources can do true incremental pulls instead of full pulls.
 - Persist **DQ scorecards and quarantine counts** as asset state so lineage carries data-quality provenance (with a UI link to the writing task instance, #68395).
 - Replace ad-hoc XCom bookkeeping where the payload is small metadata rather than a DataFrame.
+
+> **STATUS (2026-07-23): PARTIALLY IMPLEMENTED & VALIDATED — with a design deviation.** Incremental watermarks shipped and were validated live (delta-only fetch, retry-safe advance, failed-load recovery) but live in **Airflow Variables**, not the state store: the Phase 3A.2 audit found the task-state scope unsuitable for the cross-task read/write the watermark needs (see [plan/phase-3 3A.2](plan/phase-3-remediation-validation-infra.md)). **DQ provenance as asset state was NOT implemented** — dropped in the same retreat; tracked at plan item 2B.3 for re-scoping if wanted.
 
 ### 2.3 Human-in-the-Loop (HITL) — implement the currently-stubbed approval
 

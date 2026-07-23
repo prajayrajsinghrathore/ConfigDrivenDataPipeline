@@ -142,9 +142,9 @@ Evolve [plugins/deadline_callbacks.py](../plugins/deadline_callbacks.py) and [_c
 ---
 
 ## Phase 1 exit checklist
-- [ ] 1.1 real HITL approval on triggerer; auto-approve fully gone; e2e proves pause/resume
-- [ ] 1.2 pluggable transient retry policy + numeric backoff; config-driven; `fixed` fallback kept
-- [ ] 1.3 deadline config from Connections; tiered alerts; AVERAGE_RUNTIME option; callback timeout
+- [x] 1\.1\ real\ HITL\ approval\ on\ triggerer;\ auto\-approve\ fully\ gone;\ e2e\ proves\ pause/resume
+- [x] 1\.2\ pluggable\ transient\ retry\ policy\ \+\ numeric\ backoff;\ config\-driven;\ `fixed`\ fallback\ kept
+- [x] 1\.3\ deadline\ config\ from\ Connections;\ tiered\ alerts;\ AVERAGE_RUNTIME\ option;\ callback\ timeout
 - [ ] 1.4 `rerun_with_latest_version` wired + rollback doc updated
-- [ ] 1.5 schema/fixtures/contract-tests/docs updated
-- [ ] both test lanes green (mocked unit + Docker integration/e2e)
+- [x] 1\.5\ schema/fixtures/contract\-tests/docs\ updated
+- [x] both\ test\ lanes\ green\ \(mocked\ unit\ \+\ Docker\ integration/e2e\)
