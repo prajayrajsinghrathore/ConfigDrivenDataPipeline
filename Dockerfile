@@ -23,14 +23,14 @@ RUN if [ "$USE_ZSCALER_CERT" = "true" ] ; then \
     fi
 
 # Copy requirements and package source
-COPY requirements.txt constraints-3.12.txt /tmp/
+COPY requirements.txt constraints.txt /tmp/
 COPY pyproject.toml /tmp/
 COPY rlam_airflow_framework/ /tmp/rlam_airflow_framework/
 
 # Install dependencies globally into the image's own env as root
 RUN --mount=type=cache,target=/root/.cache/pip \
     grep -v "^apache-airflow==" /tmp/requirements.txt | grep -v "^apache-airflow-core==" | grep -v "^apache-airflow-task-sdk==" > /tmp/reqs_filtered.txt \
-    && pip install --compile -r /tmp/reqs_filtered.txt -c /tmp/constraints-3.12.txt \
+    && pip install --compile -r /tmp/reqs_filtered.txt -c /tmp/constraints.txt \
     && pip uninstall -y apache-airflow apache-airflow-core apache-airflow-task-sdk || true \
     && cd /tmp \
     && pip install --compile --no-deps . \

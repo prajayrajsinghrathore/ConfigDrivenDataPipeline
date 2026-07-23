@@ -24,18 +24,18 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
-| 2A.1 Verify partitioning API surface | ⬜ | | |
-| 2A.2 `partition:` config schema + contract tests | ⬜ | | |
-| 2A.3 Factory emits partitioned assets + mappers | ⬜ | | |
-| 2A.4 Partition-aware ingest/load (all source/sink types) | ⬜ | | |
-| 2A.5 Partitioned reprocessing runbook | ⬜ | | |
-| 2A.6 Partitioning tests (unit + Docker e2e) | ⬜ | | |
-| 2B.1 Verify State Store API surface | ⬜ | | |
-| 2B.2 Incremental watermarks (retry-safe) | ⬜ | | |
-| 2B.3 DQ provenance as asset state | ⬜ | | |
-| 2B.4 State-store retention / GC config | ⬜ | | |
-| 2B.5 State-store tests (unit + Docker e2e) | ⬜ | | |
-| 2.C Mocks / fixtures / docs / report status | ⬜ | | |
+| 2A.1 Verify partitioning API surface | ✅ | | probe report plan/api-verification-report.md; zero import errors on live 3.3.0 container closes B1 |
+| 2A.2 `partition:` config schema + contract tests | ✅ | | contract tests green |
+| 2A.3 Factory emits partitioned assets + mappers | ✅ | | unit-covered; cron+mapper combo rejected (3A.5) |
+| 2A.4 Partition-aware ingest/load (all source/sink types) | ✅ | | unit-covered |
+| 2A.5 Partitioned reprocessing runbook | ✅ | | Documentation/Runbook_Partition_Range_Reprocessing.md |
+| 2A.6 Partitioning tests (unit + Docker e2e) | 🟨 | | unit green; partition fan-out Docker e2e (3B.4) outstanding |
+| 2B.1 Verify State Store API surface | ✅ | | probed; watermark moved to airflow.sdk Variable (3A.2) |
+| 2B.2 Incremental watermarks (retry-safe) | ✅ | | airflow.sdk Variable, advance-on-success; strict mode + first_run_completed marker; unit-covered |
+| 2B.3 DQ provenance as asset state | 🟨 | | code present; UI/API verification (3B.4) outstanding |
+| 2B.4 State-store retention / GC config | 🟨 | | superseded in part by Variable-based watermark; review with 3B.4 |
+| 2B.5 State-store tests (unit + Docker e2e) | 🟨 | | unit green; incremental two-run Docker e2e (3B.4) outstanding |
+| 2.C Mocks / fixtures / docs / report status | ✅ | | reference configs parse in dag lane; mocks mirror verified surface |
 
 ---
 

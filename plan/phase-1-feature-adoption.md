@@ -23,11 +23,11 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
-| 1.1 Real HITL quarantine approval (triggerer) | ⬜ | | |
-| 1.2 Pluggable retry policy + numeric backoff | ⬜ | | |
-| 1.3 Deadline from Connection + tiers + AVERAGE_RUNTIME | ⬜ | | |
-| 1.4 `rerun_with_latest_version` control | ⬜ | | |
-| 1.5 Schema / fixtures / contract-tests / docs | ⬜ | | |
+| 1.1 Real HITL quarantine approval (triggerer) | ✅ | | 2026-07-23 e2e observed: awaiting_input → approve → load_quarantine_records success on live stack |
+| 1.2 Pluggable retry policy + numeric backoff | ✅ | | retry_policy.py per AIP-105; unit-covered; transient path exercised by deadline probe |
+| 1.3 Deadline from Connection + tiers + AVERAGE_RUNTIME | ✅ | | 2026-07-23 e2e: deadline miss fired 1.6s late; SyncCallback read DB-stored kafka_default (kafka:29092); exactly one event on pipeline-alerts; callback success. Real payload shape (dict dag_run, ISO deadline_time) fixed + unit-locked |
+| 1.4 `rerun_with_latest_version` control | 🟨 | | wired + unit-tested; two-bundle-version Docker e2e not yet run |
+| 1.5 Schema / fixtures / contract-tests / docs | ✅ | | schema fields optional w/ defaults; contract tests green; example_airflow_330_features.yaml |
 
 ---
 

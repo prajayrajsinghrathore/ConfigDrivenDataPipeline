@@ -1,0 +1,23 @@
+# TEMPORARY validation probe (Phase 3B.3): forces a deadline miss by fetching a
+# blackhole endpoint while carrying a 1-minute deadline. Safe to delete after the
+# deadline e2e has been observed; keep paused otherwise.
+metadata:
+  tenant: sandbox
+  description: "Deadline-miss e2e probe: blackhole endpoint + 1-minute deadline"
+data_source:
+  name: deadline_probe
+  type: rest_api
+  endpoint: https://10.255.255.1/never-responds
+schedule:
+  interval: null
+  start_date: "2024-01-01"
+  deadline:
+    enabled: true
+    timeout_minutes: 1
+  retry:
+    policy: transient
+    max_retries: 2
+    retry_delay_seconds: 60
+destination:
+  primary:
+    type: print_logs

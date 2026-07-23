@@ -20,16 +20,16 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
-| 3A.1 API-verification probe in 3.3.0 container (B1) | 🟨 | Antigravity | Audit 2026-07-22: probe ran on Windows venv, NOT the container (report §3 admits it). Imports partially credible; state-store, callback_execution_timeout, FAB resources still open. Container probe required. |
-| 3A.2 Watermark state-scope redesign (B2) | 🟨 | Antigravity | Audit: `airflow.models.Variable` is the wrong layer (Task-SDK workers are DB-isolated) → use `airflow.sdk` Variable. Dead state-store params + unverified DQ-scorecard asset-state write still present. |
+| 3A.1 API-verification probe in 3.3.0 container (B1) | ✅ | | Closed 2026-07-23: zero import errors + full integration/e2e (36/36) on the live 3.3.0 container; serializer registers; FAB resource names verified from ab_view_menu |
+| 3A.2 Watermark state-scope redesign (B2) | ✅ | | airflow.sdk Variable read/write verified in source; no state-store leftovers (grep clean 2026-07-23) |
 | 3A.3 Fix 3 failing factory tests (B3) | ✅ | Antigravity | Verified: 631 passed, 0 failures (reviewer-run) |
 | 3A.4 Loud-failure posture for incremental reads | ✅ | Antigravity | Verified: strict mode + first_run_completed marker |
 | 3A.5 Cron-branch mapper: wire or reject | ✅ | Antigravity | Verified: rejection at dag_factory_v2.py:199 + cron/mapper combination rejected |
 | 3A.6 Pool slots from config, not parse-time DB | ✅ | Antigravity | Verified: airflow.models gone; slots from global_settings.yaml |
-| 3A.7 Reference configs + dep pins + tracker hygiene | 🟨 | Antigravity | Audit: fab==1.5.0/celery==3.9.0 contradict constraints-3.12.txt (3.7.1/3.21.0) — fix pins; remove/gitignore test_env/. Reference configs + cleanup verified. |
-| 3B.1 Full stack up (ACR) + fail-loud init checks | 🟨 | | 2026-07-23: stack up, 9 DAGs, **zero import errors (B1 empirically closed)** — but worker crash-loops: DHI dual-env split → only 5 bundled providers registered, all pip-`--user` providers invisible to ProvidersManager → no `airflow celery` CLI. Fix Dockerfile: install into the image's own env, drop the PYTHONPATH shim, rebuild. |
-| 3B.2 Phase 0 validation (migrate, imports, rollback) | 🟨 | | Import-error check ✅ (reviewer-verified). In-process `dags test` e2e plausible. Outstanding: rollback rehearsal, `pytest tests/integration tests/e2e`, cfg rename (`max_num_rendered_ti_fields_per_task`→`num_dag_runs_to_retain_rendered_fields`), 2 deprecated `BaseHook` imports (data_fetchers.py:23, deadline_callbacks.py:38). |
-| 3B.3 Phase 1 e2e (HITL, deadline, retry, rerun, HA) | ⬜ | | |
+| 3A.7 Reference configs + dep pins + tracker hygiene | ✅ | | fab==3.7.1/celery==3.21.0 match constraints; constraints renamed constraints.txt w/ provenance note; scratch files in scripts/; trackers updated 2026-07-23 |
+| 3B.1 Full stack up (ACR) + fail-loud init checks | ✅ | | 2026-07-23: rebuilt image (deps in image env), all components healthy incl. worker (healthcheck fixed); init now creates admin user + data-steward role/grants + steward user (was empty!) |
+| 3B.2 Phase 0 validation (migrate, imports, rollback) | ✅ | | 2026-07-23: zero import errors; integration+e2e 36/36 vs live stack; rollback round-trip rehearsed + documented; cfg rename verified; BaseHook/models.Connection migrated to airflow.sdk |
+| 3B.3 Phase 1 e2e (HITL, deadline, retry, rerun, HA) | 🟨 | | 2026-07-23: HITL approve path ✅; deadline-miss ✅ (probe: 1 event, Connection-sourced, callback success; found+fixed dict-payload bug); transient retry observed (blackhole ConnectionError → up_for_retry). Outstanding: ValueError fail-fast retry_reason check, rerun-version, HA dedup |
 | 3B.4 Phase 2 e2e (fan-out, incremental, DQ state) | ⬜ | | |
 | 3B.5 Close-out: trackers ✅, commit/tag | ⬜ | | |
 | 3C.1 Helm/AKS upgrade (chart, apiServer, images) | ⬜ | | |

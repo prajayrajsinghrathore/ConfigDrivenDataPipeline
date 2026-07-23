@@ -1,3 +1,6 @@
+# NOTE (2026-07-23): renamed from constraints-3.12.txt. This is a v3-3-test
+# branch snapshot (see generation header below); the pin set is python-version
+# agnostic and is validated against the DHI base image, which ships Python 3.13.
 #
 # This constraints file was automatically generated on 2026-07-06T12:27:13.807760
 # via `uv pip install --resolution highest` for the "v3-3-test" branch of Airflow.

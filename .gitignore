@@ -208,3 +208,6 @@ __marimo__/
 
 # Local test runtime artifacts (created by test runs; not source)
 tests/airflow_home/
+
+# Airflow runtime logs (docker volume mount)
+logs/

@@ -21,18 +21,18 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
-| 0.1 Resolve target dependency set | ⬜ | | |
-| 0.2 Migrate serde → `airflow.sdk.serde` | ⬜ | | |
-| 0.3 Remove import shims + delete dead tenant import | ⬜ | | |
-| 0.4 Remove HITL auto-approve stub (defer honestly) | ⬜ | | |
-| 0.5 airflow.cfg / SMTP / deserialization review | ⬜ | | |
-| 0.6 Update unit-test Airflow mock registry | ⬜ | | |
-| 0.7 Fix / add / remove tests (mocked lane) | ⬜ | | |
-| 0.8 Docker migrate + integration/e2e + zero import errors | ⬜ | | |
-| 0.9 Downgrade / rollback rehearsal | ⬜ | | |
-| 0.10 Documentation & comment hygiene | ⬜ | | |
-| 0.11 Bump local Docker stack to 3.3.0 | ⬜ | | |
-| 0.12 Provider compatibility + hook-usage audit | ⬜ | | |
+| 0.1 Resolve target dependency set | ✅ | | requirements.txt + pyproject vs v3-3-test constraints snapshot (renamed constraints.txt); image builds clean |
+| 0.2 Migrate serde → `airflow.sdk.serde` | ✅ | | no `airflow.serialization` imports remain; serializer registers in container |
+| 0.3 Remove import shims + delete dead tenant import | ✅ | | no try/except ImportError around Airflow imports; direct imports verified in container |
+| 0.4 Remove HITL auto-approve stub (defer honestly) | ✅ | | superseded by real HITL (Phase 1.1); no auto-approve path remains |
+| 0.5 airflow.cfg / SMTP / deserialization review | ✅ | | cfg rename `num_dag_runs_to_retain_rendered_fields` applied; FAB auth manager consistent cfg/compose; data-steward grants scripted in init (2026-07-23) |
+| 0.6 Update unit-test Airflow mock registry | ✅ | | mocks mirror verified import surface; stale models/hooks mocks pruned 2026-07-23 |
+| 0.7 Fix / add / remove tests (mocked lane) | ✅ | | 639 passed / 0 failed (2026-07-23); deprecation filters un-blinded |
+| 0.8 Docker migrate + integration/e2e + zero import errors | ✅ | | 2026-07-23 validated on live 3.3.0 Docker stack: migrate clean, zero import errors, integration+e2e 36/36 |
+| 0.9 Downgrade / rollback rehearsal | ✅ | | 2026-07-23 round-trip rehearsed on throwaway DB; documented in ROLLBACK_STRATEGY.md |
+| 0.10 Documentation & comment hygiene | 🟨 | | not systematically re-audited; spot fixes applied |
+| 0.11 Bump local Docker stack to 3.3.0 | ✅ | | DHI base image (py3.13); all components report 3.3.0; worker healthcheck fixed to `python -m celery` 2026-07-23 |
+| 0.12 Provider compatibility + hook-usage audit | ✅ | | fab 3.7.1 / celery 3.21.0 pinned per constraints; openlineage provider package; Connection access moved to airflow.sdk 2026-07-23 |
 
 > **Scope note (per project decision):** the **local Docker stack** ([Dockerfile](../Dockerfile), [docker/docker-compose.yaml](../docker/docker-compose.yaml)) is in scope for Phase 0 because it is the integration/e2e test lane. **Helm/AKS** ([helm/](../helm/)) and the **Azure DevOps CI pipeline** ([.azure-pipelines/config.yml](../.azure-pipelines/config.yml)) are **deferred to a separate effort** — see "Deferred" at the bottom of this file so the work is not lost.
 

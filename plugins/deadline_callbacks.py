@@ -42,6 +42,40 @@ from airflow.sdk import Connection
 # Configure structlog
 log = structlog.get_logger(__name__)
 
+
+def _dag_run_field(dag_run: Any, field: str) -> Any:
+    """Read a field from the callback context's dag_run.
+
+    Verified against the real Airflow 3.3.0 SyncCallback payload (2026-07-23):
+    `context['dag_run']` arrives as a plain dict (keys: dag_id, logical_date,
+    queued_at, ...), while unit tests and older call sites may pass an object
+    with attributes. Support both.
+    """
+    if dag_run is None:
+        return None
+    if isinstance(dag_run, dict):
+        return dag_run.get(field)
+    return getattr(dag_run, field, None)
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    """Coerce a deadline timestamp to an aware datetime.
+
+    The real 3.3.0 callback payload carries `deadline.deadline_time` as an ISO
+    string (e.g. '2026-07-23T13:26:09.360833Z'); tests may pass datetimes.
+    Returns None when unparseable.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (ValueError, TypeError):
+        log.warning("Could not parse deadline_time", value=str(value))
+        return None
+
 # =============================================================================
 # CENTRALIZED TIMEOUT CONFIGURATION
 # =============================================================================
@@ -237,13 +271,13 @@ class KafkaDeadlineNotifier(BaseNotifier):
             context: Airflow callback context containing dag_run, task, etc.
         """
         dag_run = context.get("dag_run")
-        dag_id = dag_run.dag_id if dag_run else "unknown"
-        logical_date = dag_run.logical_date if dag_run else None
-        queued_at = dag_run.queued_at if dag_run else None
+        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
+        logical_date = _dag_run_field(dag_run, "logical_date")
+        queued_at = _dag_run_field(dag_run, "queued_at")
 
         # Extract deadline information
         deadline_info = context.get("deadline", {})
-        deadline_time = deadline_info.get("deadline_time")
+        deadline_time = _parse_datetime(deadline_info.get("deadline_time"))
         reference = deadline_info.get("reference", "dagrun_queued")
 
         # Calculate how late the run is
@@ -351,8 +385,8 @@ class EmailDeadlineNotifier(BaseNotifier):
         from airflow.utils.email import send_email
 
         dag_run = context.get("dag_run")
-        dag_id = dag_run.dag_id if dag_run else "unknown"
-        logical_date = dag_run.logical_date if dag_run else None
+        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
+        logical_date = _dag_run_field(dag_run, "logical_date")
 
         # Extract deadline information
         deadline_info = context.get("deadline", {})
@@ -452,7 +486,7 @@ class CompositeDeadlineNotifier(BaseNotifier):
             context: Airflow callback context
         """
         dag_run = context.get("dag_run")
-        dag_id = dag_run.dag_id if dag_run else "unknown"
+        dag_id = _dag_run_field(dag_run, "dag_id") or "unknown"
 
         log.info(
             "Processing deadline alert", dag_id=dag_id, email_enabled=self.email_enabled
