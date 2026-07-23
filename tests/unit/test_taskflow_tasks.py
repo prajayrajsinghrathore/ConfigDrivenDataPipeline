@@ -228,6 +228,49 @@ class TestIngestDataSftp:
         mock_fetch_sftp.assert_called_once()
 
 
+class TestIncrementalWatermarkFiltering:
+    """Regression tests for the 3B.4 watermark-corruption bug: pd.to_datetime()
+    silently converts integer watermark columns to epoch-nanosecond timestamps
+    (id=5 -> 1970-01-01T00:00:00.000000005), which then poisoned the stored
+    watermark. Numeric comparison must win and the column must not be mutated."""
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    def test_integer_watermark_filters_numerically_without_mutation(
+        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+    ):
+        import sys
+
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        rest_api_config["incremental"] = {
+            "enabled": True,
+            "watermark_column": "id",
+            "initial_watermark": "0",
+        }
+
+        mock_context.return_value = mock_airflow_context
+        mock_fetch_http.return_value = pd.DataFrame(
+            {"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"]}
+        )
+
+        sdk_mock = sys.modules["airflow.sdk"]
+        original_variable = sdk_mock.Variable
+        sdk_mock.Variable = MagicMock()
+        # Stored watermark "3" -> only ids 4 and 5 should survive
+        sdk_mock.Variable.get.return_value = "3"
+        try:
+            result = ingest_data(rest_api_config)
+        finally:
+            sdk_mock.Variable = original_variable
+
+        saved_df = pd.read_parquet(result)
+        assert list(saved_df["id"]) == [4, 5]
+        # The column must remain integer — NOT coerced to datetime
+        assert pd.api.types.is_integer_dtype(saved_df["id"]), saved_df["id"].dtype
+
+
 class TestIngestDataErrorHandling:
     """Test error handling in ingest_data function."""
 

@@ -29,12 +29,12 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 | 2A.3 Factory emits partitioned assets + mappers | ✅ | | unit-covered; cron+mapper combo rejected (3A.5) |
 | 2A.4 Partition-aware ingest/load (all source/sink types) | ✅ | | unit-covered |
 | 2A.5 Partitioned reprocessing runbook | ✅ | | Documentation/Runbook_Partition_Range_Reprocessing.md |
-| 2A.6 Partitioning tests (unit + Docker e2e) | 🟨 | | unit green; partition fan-out Docker e2e (3B.4) outstanding |
+| 2A.6 Partitioning tests (unit + Docker e2e) | ✅ | | 2026-07-23 e2e: two runs w/ distinct partition_key via REST; fetch scoped per partition (event_date param observed at mock API); clearPartitions cleared/re-ran ONLY the targeted partition; partition_key in Kafka event metadata |
 | 2B.1 Verify State Store API surface | ✅ | | probed; watermark moved to airflow.sdk Variable (3A.2) |
 | 2B.2 Incremental watermarks (retry-safe) | ✅ | | airflow.sdk Variable, advance-on-success; strict mode + first_run_completed marker; unit-covered |
-| 2B.3 DQ provenance as asset state | 🟨 | | code present; UI/API verification (3B.4) outstanding |
-| 2B.4 State-store retention / GC config | 🟨 | | superseded in part by Variable-based watermark; review with 3B.4 |
-| 2B.5 State-store tests (unit + Docker e2e) | 🟨 | | unit green; incremental two-run Docker e2e (3B.4) outstanding |
+| 2B.3 DQ provenance as asset state | ⬜ | | NOT implemented — dropped in the 3A.2 retreat from the state-store API (no asset_state/scorecard code exists). Re-scope if wanted: needs verified 3.3.0 asset-state surface first |
+| 2B.4 State-store retention / GC config | ⬜ | | N/A after 3A.2: watermarks live in Airflow Variables, not the state store; nothing to configure. Revisit only if 2B.3 is re-scoped |
+| 2B.5 State-store tests (unit + Docker e2e) | ✅ | | 2026-07-23 e2e (Variable-based): run1 full load wm→5; run2 fetched ONLY delta (?id=5 observed) wm→8; failed load left wm at 8; recovery run re-ingested the delta. Corruption bug (pd.to_datetime on int ids) found+fixed+regression-tested |
 | 2.C Mocks / fixtures / docs / report status | ✅ | | reference configs parse in dag lane; mocks mirror verified surface |
 
 ---

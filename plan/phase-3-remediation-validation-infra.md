@@ -30,7 +30,7 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 | 3B.1 Full stack up (ACR) + fail-loud init checks | ✅ | | 2026-07-23: rebuilt image (deps in image env), all components healthy incl. worker (healthcheck fixed); init now creates admin user + data-steward role/grants + steward user (was empty!) |
 | 3B.2 Phase 0 validation (migrate, imports, rollback) | ✅ | | 2026-07-23: zero import errors; integration+e2e 36/36 vs live stack; rollback round-trip rehearsed + documented; cfg rename verified; BaseHook/models.Connection migrated to airflow.sdk |
 | 3B.3 Phase 1 e2e (HITL, deadline, retry, rerun, HA) | 🟨 | | 2026-07-23: HITL approve path ✅; deadline-miss ✅ (probe: 1 event, Connection-sourced, callback success; found+fixed dict-payload bug); transient retry observed (blackhole ConnectionError → up_for_retry). Outstanding: ValueError fail-fast retry_reason check, rerun-version, HA dedup |
-| 3B.4 Phase 2 e2e (fan-out, incremental, DQ state) | ⬜ | | |
+| 3B.4 Phase 2 e2e (fan-out, incremental, DQ state) | ✅ | | 2026-07-23: partition fan-out/reprocessing + incremental two-run + watermark safety all observed (see 2A.6/2B.5 notes). DQ-provenance excluded — feature was dropped in 3A.2, tracked at 2B.3 |
 | 3B.5 Close-out: trackers ✅, commit/tag | ⬜ | | |
 | 3C.1 Helm/AKS upgrade (chart, apiServer, images) | ⬜ | | |
 | 3C.2 Azure DevOps CI: real test lanes | ⬜ | | |

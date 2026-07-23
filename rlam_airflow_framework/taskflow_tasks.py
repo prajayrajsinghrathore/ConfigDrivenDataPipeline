@@ -242,8 +242,11 @@ def ingest_data(config: Dict[str, Any]) -> str:
         watermark=adjusted_watermark,
     )
 
-    # Publish ingestion start event
+    # Publish ingestion start event (partition threaded into metadata for traceability)
     topic = config.get("event", {}).get("topic", "pipeline-events")
+    partition_metadata = (
+        {"partition_key": partition_value} if partition_value is not None else {}
+    )
     kafka_publisher.publish_pipeline_event(
         dag_id=dag_id,
         task_id=task_id,
@@ -252,6 +255,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
         message=f"Started ingesting from {source_name}",
         execution_date=datetime.now(timezone.utc),
         topic=topic,
+        metadata=partition_metadata or None,
     )
 
     try:
@@ -272,33 +276,39 @@ def ingest_data(config: Dict[str, Any]) -> str:
         else:
             raise ValueError(f"Unsupported source type: {source_type}")
 
-        # Post-fetch incremental filtering on DataFrame
+        # Post-fetch incremental filtering on DataFrame.
+        # IMPORTANT: comparisons must never mutate the watermark column — the
+        # stored watermark is later computed from it in load_data. Numeric must
+        # be tried BEFORE datetime: pd.to_datetime() silently converts integers
+        # to epoch-nanosecond timestamps (id=5 -> 1970-01-01T00:00:00.000000005),
+        # which corrupted the stored watermark (found in the 3B.4 e2e).
         if is_incremental and watermark_column and not df.empty:
             if watermark_column in df.columns:
+                mask = None
+                col = df[watermark_column]
                 try:
-                    df[watermark_column] = pd.to_datetime(df[watermark_column])
-                    watermark_dt = pd.to_datetime(adjusted_watermark)
-                    # Filter rows where watermark_column > adjusted_watermark
-                    df = df[df[watermark_column] > watermark_dt]
+                    mask = pd.to_numeric(col) > float(adjusted_watermark)
+                    comparison = "numeric"
+                except (ValueError, TypeError):
+                    try:
+                        mask = pd.to_datetime(col) > pd.to_datetime(adjusted_watermark)
+                        comparison = "datetime"
+                    except Exception:
+                        try:
+                            mask = col.astype(str) > str(adjusted_watermark)
+                            comparison = "string (lexicographic — verify ordering!)"
+                        except Exception as ex:
+                            log.error(
+                                "Failed to filter DataFrame by watermark", error=str(ex)
+                            )
+                if mask is not None:
+                    df = df[mask]
                     log.info(
                         "Filtered DataFrame by watermark column",
+                        comparison=comparison,
                         remaining_rows=len(df),
                         watermark=adjusted_watermark,
                     )
-                except Exception:
-                    try:
-                        df = df[
-                            df[watermark_column].astype(str) > str(adjusted_watermark)
-                        ]
-                        log.info(
-                            "Filtered DataFrame by watermark column (string comparison)",
-                            remaining_rows=len(df),
-                            watermark=adjusted_watermark,
-                        )
-                    except Exception as ex:
-                        log.error(
-                            "Failed to filter DataFrame by watermark", error=str(ex)
-                        )
 
         if df.empty:
             log.warning("No data fetched from source", source_name=source_name)
@@ -319,7 +329,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
             message=f"Ingested {len(df)} rows from {source_name}",
             execution_date=datetime.now(timezone.utc),
             topic=topic,
-            metadata={"row_count": len(df)},
+            metadata={"row_count": len(df), **partition_metadata},
         )
 
         # Save DataFrame and return path
@@ -875,6 +885,11 @@ def load_data(
             message=f"Load failed: {str(e)}",
             execution_date=datetime.now(timezone.utc),
             topic=topic,
+            metadata=(
+                {"partition_key": partition_value}
+                if partition_value is not None
+                else None
+            ),
         )
         raise
 
