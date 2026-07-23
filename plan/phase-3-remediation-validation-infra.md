@@ -33,8 +33,9 @@ Status legend in [README.md](README.md#progress-tracking). Update the row + Note
 | 3B.4 Phase 2 e2e (fan-out, incremental, DQ state) | ✅ | | 2026-07-23: partition fan-out/reprocessing + incremental two-run + watermark safety all observed (see 2A.6/2B.5 notes). DQ-provenance excluded — feature was dropped in 3A.2, tracked at 2B.3 |
 | 3B.5 Close-out: trackers ✅, commit/tag | ✅ | | 2026-07-23: trackers evidence-based across phases 0-3; upgrade-report §2.1/§2.2 statuses updated (2B.3 deviation documented); state committed on upgrade/phase-3-remediation and tagged airflow-3.3.0-validated |
 | 3C.1 Helm/AKS upgrade (chart, apiServer, images) | ⬜ | | |
-| 3C.2 Azure DevOps CI: real test lanes | ⬜ | | |
+| 3C.2 Azure DevOps CI: real test lanes | ⬜ | | Dag lane must run as its OWN `pytest tests/dag` step (lane separation 2026-07-23) |
 | 3C.3 ZScaler build-arg wiring for inside builds | ⬜ | | |
+| 3C.4 Pipeline-config delivery (external git repo → CI drop) | ⬜ | | Added 2026-07-23: configs must NOT be baked in the image; mirrors GitDagBundle/rollback model. Engine (framework+notifiers) already self-contained in image |
 | 3D.1 Multi-Team evaluation spike (gated) | ⬜ | | |
 | 3D.2 Custom DataFrame serializer retirement (gated) | ⬜ | | |
 
@@ -148,11 +149,32 @@ All trackers in phases 0–2 flipped to ✅ with notes; commit (and tag if desir
 
 ## Task 3C.2 — Azure DevOps CI: run the real test lanes
 
-Extend [.azure-pipelines/config.yml](../.azure-pipelines/config.yml) (today: schema checks only): a job for `pytest tests/unit tests/contract tests/dag` (mocked lane, pip-cached), and a Docker-based job for `tests/integration` (+ `tests/e2e` if runner capacity allows) using compose services. Keep the existing schema/tenant validation jobs. Gate PRs on the mocked lane at minimum.
+Extend [.azure-pipelines/config.yml](../.azure-pipelines/config.yml) (today: schema checks only). Keep the existing schema/tenant validation jobs. Gate PRs on the mocked lane at minimum.
+
+**Lane invocations — run in SEPARATE steps (post 2026-07-23 lane-separation):**
+- Mocked lane: `pytest tests/unit tests/contract` (pip-cached, fast; installs `airflow.*` mocks in `sys.modules`).
+- **DAG lane in its OWN invocation:** `pytest tests/dag` — it needs *real* Airflow and [tests/dag/conftest.py](../tests/dag/conftest.py) **loudly skips** the whole lane if the unit mocks are already in-process. Do **not** combine it with `tests/unit` in one `pytest` call (that yields ~57 silent-looking skips). On a Linux CI runner the DAG lane runs fully; the 13 DagBag tests that need POSIX `fcntl` only skip on Windows.
+- Docker-based job for `tests/integration` (+ `tests/e2e` if runner capacity allows) using compose services. The **opt-in probe suite** ([tests/e2e/test_probe_scenarios.py](../tests/e2e/test_probe_scenarios.py), `RUN_PROBE_E2E=1`) is a good nightly/scheduled job — it drives real deadline/partition/incremental scenarios and takes minutes.
+- Value note: the DAG lane un-skip (2026-07-23) already caught a real parse-time bug (snowflake AIP-60 URI) that the container lane masked — strong reason to make `pytest tests/dag` a required PR gate.
 
 ## Task 3C.3 — ZScaler wiring for inside builds
 
 Implement the `USE_ZSCALER_CERT` build ARG (Phase 0 Task 0.11 design) if not yet done; wire `--build-arg USE_ZSCALER_CERT=true` into the inside-env build path (compose `build.args`, CI variable); document the **daemon-level trust** requirement for pulling through ZScaler; confirm [zscaler-ca.crt](../zscaler-ca.crt) is current.
+
+## Task 3C.4 — Pipeline-config delivery: separate git repo → CI drop → DAG generation
+
+**Context / decision (2026-07-23).** The framework distinguishes **engine** (the `rlam_airflow_framework` package — now includes the deadline notifiers after the `plugins/` fold-in — shipped baked into the image) from **content** (the per-pipeline `config/data_sources/*.yaml`). The agreed model: **pipeline configs live in a separate git repo**, and a CI/CD YAML pipeline places them where Airflow reads them, which drives DAG generation via [dags/generate_dags.py](../dags/generate_dags.py). This mirrors the DAG-bundle approach the rollback strategy already assumes ([ROLLBACK_STRATEGY.md](../ROLLBACK_STRATEGY.md), `GitDagBundle` → `refs/tags/prod-vX.Y.Z`).
+
+**The gap this closes.** Today `config/` (and `dags/`) reach the local stack **only via docker-compose volume mounts** ([docker/docker-compose.yaml](../docker/docker-compose.yaml) `../config:/opt/airflow/config`, `../dags:/opt/airflow/dags`) — the same mount-dependency class that left `plugins/` missing from the image before the fold-in. In AKS there is no host to mount from, so config delivery must be explicit. **Do NOT bake configs into the image** — that would recouple config changes to engine releases and defeat config-only rollback.
+
+**Work:**
+1. Decide the config repo layout + the schema contract it must satisfy (the [data_source_schema.yaml](../config/schemas/data_source_schema.yaml) validation, including the new **unknown-top-level-key rejection** contract test added 2026-07-23 — the external repo's configs must pass it in the config repo's own CI).
+2. Wire the delivery mechanism in Helm/AKS: `GitDagBundle` pointing at the config repo (preferred — gives tag-based rollback for free), **or** an init/sync step that clones the tagged config revision into the DAGs/config path. Reconcile with the two bundles already sketched in the rollback doc (framework LocalDagBundle + configs GitDagBundle).
+3. Provision `global_settings.yaml` (tenants/pools) and connections consistently with 3A.6/3C.1 — decide whether global settings ship with the engine image or the config repo (recommendation: engine image, since pool slots are an operational contract the DAG factory reads at parse time).
+4. Keep the local compose mounts as the **fast-iteration dev path** (they correctly override the delivered copies on a laptop); the delivered/bundle path is for AKS.
+5. Add a CI job in the **config repo** (not this repo) that runs the contract/schema lane against every config before it can be tagged for deployment — so a bad config is caught before it reaches Airflow.
+
+**Acceptance:** an AKS deployment picks up pipeline configs from the external repo at a pinned revision with no volume mount and no image rebuild; rolling a config back is a git-tag move; the engine image contains zero pipeline configs.
 
 ---
 
@@ -181,4 +203,5 @@ Implement the `USE_ZSCALER_CERT` build ARG (Phase 0 Task 0.11 design) if not yet
 - [ ] 3C.1 Helm on 3.3.0 (apiServer rework verified), dev-AKS sanity deploy
 - [ ] 3C.2 CI runs mocked lane (PR gate) + Docker integration lane
 - [ ] 3C.3 ZScaler ARG wired + daemon-trust documented
+- [ ] 3C.4 pipeline-config delivery from external repo (no mount, no bake, tag-rollback)
 - [ ] 3D.1 / 3D.2 remain gated unless explicitly green-lit
