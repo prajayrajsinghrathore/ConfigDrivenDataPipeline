@@ -1,0 +1,36 @@
+metadata:
+  tenant: sandbox
+  description: "Phase 1 validation pipeline: HITL quarantine approval + deadline alert + transient retry policy"
+data_source:
+  name: financial_operations_v2
+  type: rest_api
+  endpoint: https://official-joke-api.appspot.com/random_joke
+schedule:
+  interval: "0 0 * * *"
+  start_date: "2024-01-01"
+  deadline:
+    enabled: true
+    timeout_minutes: 30
+  retry:
+    policy: transient
+    max_retries: 2
+    retry_delay_seconds: 60
+destination:
+  primary:
+    type: print_logs
+  quarantine:
+    hitl:
+      enabled: true
+      timeout_hours: 24
+      allowed_roles:
+        - data-steward
+        - admin
+validation:
+  quality_gates:
+    quarantine_invalid: true
+  soda_checks:
+    checks:
+      - name: always_fail_value
+        column: id
+        type: range
+        max: 0

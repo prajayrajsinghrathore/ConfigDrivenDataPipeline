@@ -35,6 +35,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from airflow.sdk import BaseNotifier
+# Task SDK Connection: resolves via the execution API in the SyncCallback/worker
+# context (3.3.0 #65269). airflow.models is DB-isolated there and must not be used.
+from airflow.sdk import Connection
 
 # Configure structlog
 log = structlog.get_logger(__name__)
@@ -78,8 +81,6 @@ class PluginKafkaPublisher:
         if self._initialized:
             return
             
-        self.bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
-        self.security_protocol = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
         self._producer = None
         self._producer_lock = threading.Lock()
         self._delivery_result = None
@@ -101,9 +102,19 @@ class PluginKafkaPublisher:
                     try:
                         from confluent_kafka import Producer
                         
+                        # Fetch Kafka configuration from Airflow Connection
+                        try:
+                            conn = Connection.get("kafka_default")
+                            bootstrap_servers = conn.extra_dejson.get("bootstrap.servers", "kafka:29092")
+                            security_protocol = conn.extra_dejson.get("security.protocol", "PLAINTEXT")
+                        except Exception as e:
+                            log.warning("Could not fetch kafka_default connection, using defaults", error=str(e))
+                            bootstrap_servers = "kafka:29092"
+                            security_protocol = "PLAINTEXT"
+                        
                         config = {
-                            "bootstrap.servers": self.bootstrap_servers,
-                            "security.protocol": self.security_protocol,
+                            "bootstrap.servers": bootstrap_servers,
+                            "security.protocol": security_protocol,
                             "acks": "all",
                             "retries": 3,
                             "socket.timeout.ms": PLUGIN_KAFKA_SOCKET_TIMEOUT_MS,
@@ -113,7 +124,7 @@ class PluginKafkaPublisher:
                         self._producer = Producer(config)
                         log.info(
                             "Plugin Kafka producer initialized (confluent-kafka)",
-                            bootstrap_servers=self.bootstrap_servers,
+                            bootstrap_servers=bootstrap_servers,
                         )
                     except Exception as e:
                         log.error("Failed to initialize Kafka producer", error=str(e))

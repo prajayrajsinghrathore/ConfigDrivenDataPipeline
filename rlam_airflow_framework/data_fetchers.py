@@ -20,7 +20,9 @@ import socket
 from io import StringIO, BytesIO
 import json
 import xml.etree.ElementTree as ET
-from airflow.hooks.base import BaseHook
+# Task SDK Connection: resolves via the execution API on workers (airflow.models
+# is DB-isolated on Airflow 3 Task SDK workers and must not be used in task code)
+from airflow.sdk import Connection
 from typing import Optional, Dict, Any, List
 import structlog
 import os
@@ -387,8 +389,8 @@ def fetch_sftp_data(
         )
 
     try:
-        # Get connection details from Airflow
-        connection = BaseHook.get_connection(sftp_conn_id)
+        # Get connection details from Airflow (Task SDK surface)
+        connection = Connection.get(sftp_conn_id)
 
         if not connection.host:
             raise DataFetchError(

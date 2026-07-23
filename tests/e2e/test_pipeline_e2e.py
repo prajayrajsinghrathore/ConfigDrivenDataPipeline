@@ -7,12 +7,15 @@ a DAG to verifying the output in Kafka.
 Run with: docker-compose up -d && pytest tests/e2e/ -m e2e --timeout=300
 
 Uses confluent-kafka library for Kafka 4.x compatibility.
+Airflow 3.x API auth: obtains a JWT from POST /auth/token (basic auth is not
+accepted by the v2 REST API). The admin user is created by the compose init step.
 """
 
 import pytest
 import requests
 import time
 import json
+import os
 
 try:
     from confluent_kafka import Consumer, KafkaError
@@ -21,6 +24,29 @@ try:
     HAS_CONFLUENT_KAFKA = True
 except ImportError:
     HAS_CONFLUENT_KAFKA = False
+
+
+AIRFLOW_BASE_URL = os.environ.get("AIRFLOW_BASE_URL", "http://localhost:8080")
+AIRFLOW_API_URL = f"{AIRFLOW_BASE_URL}/api/v2"
+AIRFLOW_USERNAME = os.environ.get("_AIRFLOW_WWW_USER_USERNAME", "airflow")
+AIRFLOW_PASSWORD = os.environ.get("_AIRFLOW_WWW_USER_PASSWORD", "airflow")
+
+
+def get_auth_headers():
+    """Fetch a JWT from the Airflow 3.x token endpoint; None if unavailable."""
+    try:
+        response = requests.post(
+            f"{AIRFLOW_BASE_URL}/auth/token",
+            json={"username": AIRFLOW_USERNAME, "password": AIRFLOW_PASSWORD},
+            timeout=5,
+        )
+        if response.status_code in (200, 201):
+            token = response.json().get("access_token")
+            if token:
+                return {"Authorization": f"Bearer {token}"}
+    except requests.exceptions.RequestException:
+        pass
+    return None
 
 
 def check_kafka_available():
@@ -39,103 +65,98 @@ def check_kafka_available():
 KAFKA_AVAILABLE = check_kafka_available() if HAS_CONFLUENT_KAFKA else False
 
 
+@pytest.fixture
+def airflow_api():
+    """Airflow API base URL."""
+    return AIRFLOW_API_URL
+
+
+@pytest.fixture
+def auth_headers():
+    """JWT Authorization headers; skips when no token can be obtained."""
+    headers = get_auth_headers()
+    if headers is None:
+        pytest.skip("Airflow JWT token not obtainable (is the stack up with the admin user created?)")
+    return headers
+
+
 @pytest.mark.e2e
 class TestAirflowAPI:
     """Test Airflow REST API."""
 
     @pytest.fixture
-    def airflow_api(self):
-        """Airflow API base URL."""
-        return "http://localhost:8080/api/v2"
-
-    @pytest.fixture
-    def auth(self):
-        """Airflow API authentication."""
-        return ("airflow", "airflow")
-
-    @pytest.fixture
     def skip_if_airflow_unavailable(self):
         """Skip if Airflow is not available."""
         try:
-            response = requests.get(
-                "http://localhost:8080/api/v2/version",
-                auth=("airflow", "airflow"),
-                timeout=5,
-            )
-            if response.status_code != 200:
+            response = requests.get(f"{AIRFLOW_API_URL}/version", timeout=5)
+            if response.status_code not in (200, 401, 403):
                 pytest.skip("Airflow API not available")
         except requests.exceptions.RequestException:
             pytest.skip("Airflow not running")
 
-    def test_api_version(self, airflow_api, auth, skip_if_airflow_unavailable):
+    def test_api_version(self, airflow_api, auth_headers, skip_if_airflow_unavailable):
         """Test getting API version."""
-        response = requests.get(f"{airflow_api}/version", auth=auth)
+        response = requests.get(f"{airflow_api}/version", headers=auth_headers)
         assert response.status_code == 200
         assert "version" in response.json()
 
-    def test_list_dags(self, airflow_api, auth, skip_if_airflow_unavailable):
+    def test_list_dags(self, airflow_api, auth_headers, skip_if_airflow_unavailable):
         """Test listing all DAGs."""
-        response = requests.get(f"{airflow_api}/dags", auth=auth)
-        # Airflow 3.x uses JWT auth - 401 means API is working but requires JWT token
-        # 200 means basic auth worked (some configurations)
-        assert response.status_code in [200, 401]
+        response = requests.get(f"{airflow_api}/dags", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "dags" in data
+        assert isinstance(data["dags"], list)
+        assert len(data["dags"]) > 0, "stack should expose the generated DAGs"
 
-        if response.status_code == 200:
-            data = response.json()
-            assert "dags" in data
-            assert isinstance(data["dags"], list)
+
+def _pick_test_dag(airflow_api, auth_headers):
+    """Pick the cheapest DAG to exercise (prefer the joke-API smoke pipeline)."""
+    response = requests.get(f"{airflow_api}/dags", headers=auth_headers)
+    if response.status_code != 200:
+        pytest.skip(f"Could not list DAGs (HTTP {response.status_code})")
+    dags = [d["dag_id"] for d in response.json().get("dags", [])]
+    if not dags:
+        pytest.skip("No DAGs available")
+    for preferred in dags:
+        if "joke_api" in preferred or "simple_test" in preferred:
+            return preferred
+    return dags[0]
+
 
 @pytest.mark.e2e
 class TestPipelineExecution:
     """Test full pipeline execution."""
 
     @pytest.fixture
-    def airflow_api(self):
-        return "http://localhost:8080/api/v2"
-
-    @pytest.fixture
-    def auth(self):
-        return ("airflow", "airflow")
-
-    @pytest.fixture
     def skip_if_services_unavailable(self, docker_services_available):
         """Skip if required services are not available."""
         if not docker_services_available.get("kafka", False):
             pytest.skip("Kafka not available")
-
         try:
-            response = requests.get(
-                "http://localhost:8080/api/v2/version",
-                auth=("airflow", "airflow"),
-                timeout=5,
-            )
-            if response.status_code != 200:
+            response = requests.get(f"{AIRFLOW_API_URL}/version", timeout=5)
+            if response.status_code not in (200, 401, 403):
                 pytest.skip("Airflow API not available")
         except requests.exceptions.RequestException:
             pytest.skip("Airflow not running")
 
-    def test_trigger_dag_run(self, airflow_api, auth, skip_if_services_unavailable):
+    def test_trigger_dag_run(self, airflow_api, auth_headers, skip_if_services_unavailable):
         """Test triggering a DAG run."""
-        # Get first available DAG
-        response = requests.get(f"{airflow_api}/dags", auth=auth)
-        dags = response.json().get("dags", [])
-
-        if not dags:
-            pytest.skip("No DAGs available")
-
-        dag_id = dags[0]["dag_id"]
+        dag_id = _pick_test_dag(airflow_api, auth_headers)
 
         # Unpause DAG if paused
         requests.patch(
-            f"{airflow_api}/dags/{dag_id}", json={"is_paused": False}, auth=auth
+            f"{airflow_api}/dags/{dag_id}",
+            json={"is_paused": False},
+            headers=auth_headers,
         )
 
-        # Trigger DAG run
+        # Trigger DAG run (Airflow 3 requires logical_date in the payload)
         run_id = f"test_run_{int(time.time())}"
         response = requests.post(
             f"{airflow_api}/dags/{dag_id}/dagRuns",
-            json={"dag_run_id": run_id, "conf": {"test": True}},
-            auth=auth,
+            json={"dag_run_id": run_id, "logical_date": None, "conf": {"test": True}},
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 409]  # 409 if already running
@@ -144,31 +165,26 @@ class TestPipelineExecution:
             data = response.json()
             assert data["dag_run_id"] == run_id
 
-    def test_dag_run_completes(self, airflow_api, auth, skip_if_services_unavailable):
+    def test_dag_run_completes(self, airflow_api, auth_headers, skip_if_services_unavailable):
         """Test that a DAG run completes successfully."""
-        # Get first available DAG
-        response = requests.get(f"{airflow_api}/dags", auth=auth)
-        dags = response.json().get("dags", [])
-
-        if not dags:
-            pytest.skip("No DAGs available")
-
-        dag_id = dags[0]["dag_id"]
+        dag_id = _pick_test_dag(airflow_api, auth_headers)
         run_id = f"e2e_test_{int(time.time())}"
 
         # Unpause and trigger
         requests.patch(
-            f"{airflow_api}/dags/{dag_id}", json={"is_paused": False}, auth=auth
+            f"{airflow_api}/dags/{dag_id}",
+            json={"is_paused": False},
+            headers=auth_headers,
         )
 
         response = requests.post(
             f"{airflow_api}/dags/{dag_id}/dagRuns",
-            json={"dag_run_id": run_id},
-            auth=auth,
+            json={"dag_run_id": run_id, "logical_date": None},
+            headers=auth_headers,
         )
 
         if response.status_code != 200:
-            pytest.skip("Could not trigger DAG")
+            pytest.skip(f"Could not trigger DAG (HTTP {response.status_code})")
 
         # Wait for completion (max 5 minutes)
         max_wait = 300
@@ -177,7 +193,8 @@ class TestPipelineExecution:
 
         while time.time() - start_time < max_wait:
             response = requests.get(
-                f"{airflow_api}/dags/{dag_id}/dagRuns/{run_id}", auth=auth
+                f"{airflow_api}/dags/{dag_id}/dagRuns/{run_id}",
+                headers=auth_headers,
             )
 
             if response.status_code == 200:
@@ -225,7 +242,7 @@ class TestKafkaOutput:
     def test_consume_pipeline_events(self, consumer):
         """Test consuming messages from pipeline-events."""
         messages = []
-        
+
         # Poll for messages (timeout after 5 seconds total)
         start_time = time.time()
         while time.time() - start_time < 5:
@@ -251,7 +268,7 @@ class TestUIAccessibility:
     def test_airflow_ui_accessible(self):
         """Test Airflow UI is accessible."""
         try:
-            response = requests.get("http://localhost:8080/", timeout=5)
+            response = requests.get(f"{AIRFLOW_BASE_URL}/", timeout=5)
             assert response.status_code in [200, 302]  # 302 for redirect to login
         except requests.exceptions.RequestException:
             pytest.skip("Airflow UI not accessible")
@@ -266,16 +283,16 @@ class TestHealthEndpoints:
         try:
             # Airflow 3.x health endpoint paths
             health_endpoints = [
-                "http://localhost:8080/api/v2/version",  # Version endpoint as health check
-                "http://localhost:8080/health",
-                "http://localhost:8080/api/v2/health",
+                f"{AIRFLOW_API_URL}/version",  # Version endpoint as health check
+                f"{AIRFLOW_BASE_URL}/health",
+                f"{AIRFLOW_API_URL}/health",
             ]
-            
+
             for endpoint in health_endpoints:
                 response = requests.get(endpoint, timeout=5)
                 if response.status_code in [200, 401, 403]:
                     return  # Health check passed
-            
+
             # If none of the endpoints returned valid status
             pytest.fail("No health endpoint returned valid status")
         except requests.exceptions.RequestException:
@@ -286,15 +303,7 @@ class TestHealthEndpoints:
 class TestDataQualityPipeline:
     """Test data quality features in pipeline."""
 
-    @pytest.fixture
-    def airflow_api(self):
-        return "http://localhost:8080/api/v2"
-
-    @pytest.fixture
-    def auth(self):
-        return ("airflow", "airflow")
-
-    def test_data_quality_results_logged(self, airflow_api, auth):
+    def test_data_quality_results_logged(self, airflow_api):
         """Test that data quality results are logged."""
         # This would check XCom or logs for DQ results
         # Implementation depends on how DQ results are stored

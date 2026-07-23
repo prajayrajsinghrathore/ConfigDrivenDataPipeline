@@ -218,7 +218,7 @@ class TestKafkaPublisher:
     def test_kafka_publisher_sends_message(self, skip_if_kafka_unavailable):
         """Test KafkaEventPublisher sends messages correctly."""
         try:
-            from dags.utils.kafka_publisher import KafkaEventPublisher
+            from rlam_airflow_framework.kafka_publisher import KafkaEventPublisher
             from datetime import datetime
 
             publisher = KafkaEventPublisher()
@@ -242,7 +242,7 @@ class TestKafkaPublisher:
     def test_kafka_publisher_handles_connection_error(self):
         """Test KafkaEventPublisher handles connection errors gracefully."""
         try:
-            from dags.utils.kafka_publisher import KafkaEventPublisher
+            from rlam_airflow_framework.kafka_publisher import KafkaEventPublisher
             from datetime import datetime
 
             publisher = KafkaEventPublisher()

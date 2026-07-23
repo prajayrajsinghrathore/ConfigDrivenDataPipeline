@@ -1,0 +1,22 @@
+metadata:
+  tenant: testing
+  description: "Reference configuration for an incremental pipeline"
+
+data_source:
+  name: reference_incremental_src
+  type: rest_api
+  endpoint: "https://jsonplaceholder.typicode.com/posts"
+
+schedule:
+  interval: "@hourly"
+  start_date: "2024-01-01"
+
+incremental:
+  enabled: true
+  watermark_column: id
+  initial_watermark: "1"
+  strict: true
+
+destination:
+  primary:
+    type: print_logs

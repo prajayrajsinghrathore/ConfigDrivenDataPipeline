@@ -17,25 +17,42 @@ Note: HITL functionality uses operator classes (ApprovalOperator, HITLOperator, 
 not task decorators. See Airflow 3.1.6 HITL documentation.
 """
 
-from airflow.sdk import dag, DAG
+from airflow.sdk import (
+    dag,
+    DAG,
+    AssetAll,
+    CronPartitionTimetable,
+    PartitionedAssetTimetable,
+    PartitionedAtRuntime,
+    RollupMapper,
+    FanOutMapper,
+    FixedKeyMapper,
+    IdentityMapper,
+    DayWindow,
+    WeekWindow,
+    MonthWindow,
+    QuarterWindow,
+    YearWindow,
+    WaitForAll,
+    MinimumCount,
+    StartOfDayMapper,
+    StartOfWeekMapper,
+    StartOfMonthMapper,
+    StartOfQuarterMapper,
+    StartOfYearMapper,
+)
 from airflow.sdk.definitions.asset import Asset
+from airflow.sdk.definitions.callback import SyncCallback
 from airflow.sdk.definitions.deadline import (
-    AsyncCallback,
     DeadlineAlert,
     DeadlineReference,
 )
 from datetime import timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, cast
 import pendulum
 import structlog
 
 # Import HITL operators for human approval workflows
-try:
-    from airflow.operators.hitl import ApprovalOperator
-    HITL_AVAILABLE = True
-except ImportError:
-    ApprovalOperator = None
-    HITL_AVAILABLE = False
     
 from rlam_airflow_framework.config_loader import ConfigLoader
 from rlam_airflow_framework.taskflow_tasks import (
@@ -51,19 +68,15 @@ from rlam_airflow_framework.taskflow_tasks import (
 from rlam_airflow_framework.health_checks import wait_for_kafka_health
 
 # Import tenant context for multi-tenancy support
-try:
-    from utils.tenant_context import TenantContext, TenantValidationError
-except ImportError:
-    TenantContext = None
-    TenantValidationError = Exception
+# Tenant context shim removed for clean break
 
 # Import deadline notifiers
-try:
-    from plugins.deadline_callbacks import CompositeDeadlineNotifier
-except ImportError:
-    CompositeDeadlineNotifier = None
+from deadline_callbacks import CompositeDeadlineNotifier
 
 log = structlog.get_logger(__name__)
+
+
+
 
 
 class DAGFactoryV2:
@@ -162,8 +175,8 @@ class DAGFactoryV2:
             tenant_tags = [f"tenant:{tenant_id}"]
         tags = list(set(tenant_tags + config_tags))  # Deduplicate
 
-        # Create default arguments with tenant owner
-        default_args = self._create_default_args(tenant_id, metadata)
+        # Create default arguments
+        default_args = self._create_default_args(tenant_id, metadata, schedule_config)
 
         # Get tenant pool for resource isolation
         pool = None
@@ -176,23 +189,167 @@ class DAGFactoryV2:
         # Build asset definitions for lineage tracking
         inlets, outlets = self._create_assets(config)
 
+        # Partitioning configuration resolution
+        partition_config = config.get("partition", {})
+        is_partitioned = partition_config.get("enabled", False)
+        
+        # Incremental configuration resolution
+        incremental_config = config.get("incremental", {})
+        is_incremental = incremental_config.get("enabled", False)
+        
+        if is_partitioned and is_incremental:
+            raise ValueError(
+                f"Configuration error for '{source_name}': "
+                f"Combining 'partition' and 'incremental' is not supported as it causes race conditions on the global watermark."
+            )
+        
+        if is_partitioned:
+            granularity = partition_config.get("granularity", "day")
+            mapper_type = partition_config.get("mapper", "fan_out")
+            wait_policy_type = partition_config.get("wait_policy", "wait_for_all")
+            min_count = partition_config.get("minimum_count", 1)
+            max_fan_out = partition_config.get("max_fan_out", 64)
+            
+            # Global limit capping
+            from airflow.configuration import conf
+            try:
+                global_max_keys = conf.getint("scheduler", "partition_mapper_max_downstream_keys", fallback=None)
+            except Exception:
+                global_max_keys = None
+                
+            if isinstance(global_max_keys, int) and max_fan_out > global_max_keys:
+                log.warning(
+                    f"max_fan_out {max_fan_out} is bounded by global partition_mapper_max_downstream_keys {global_max_keys}.",
+                    dag_id=dag_id
+                )
+                max_fan_out = global_max_keys
+                
+            # Maps
+            window_classes = {
+                "day": DayWindow,
+                "week": WeekWindow,
+                "month": MonthWindow,
+                "quarter": QuarterWindow,
+                "year": YearWindow,
+            }
+            mapper_classes = {
+                "day": StartOfDayMapper,
+                "week": StartOfWeekMapper,
+                "month": StartOfMonthMapper,
+                "quarter": StartOfQuarterMapper,
+                "year": StartOfYearMapper,
+            }
+            
+            window_cls = window_classes.get(granularity, DayWindow)
+            upstream_mapper_cls = mapper_classes.get(granularity, StartOfDayMapper)
+            
+            if wait_policy_type == "minimum_count":
+                wait_policy = MinimumCount(min_count)
+            else:
+                wait_policy = WaitForAll()
+                
+            if mapper_type == "rollup":
+                mapper = RollupMapper(
+                    upstream_mapper=upstream_mapper_cls(),
+                    window=window_cls(),
+                    wait_policy=wait_policy,
+                    max_downstream_keys=max_fan_out
+                )
+            elif mapper_type == "fan_out":
+                mapper = FanOutMapper(
+                    upstream_mapper=upstream_mapper_cls(),
+                    window=window_cls(),
+                    max_downstream_keys=max_fan_out
+                )
+            elif mapper_type == "fixed_key":
+                mapper = FixedKeyMapper(
+                    downstream_key="fixed_key",
+                    max_downstream_keys=max_fan_out
+                )
+            else:
+                mapper = IdentityMapper()
+                
+            if partition_config.get("runtime_assigned"):
+                schedule_interval = PartitionedAtRuntime()
+            else:
+                is_time_schedule = False
+                if isinstance(schedule_interval, str):
+                    schedule_interval_clean = schedule_interval.strip().lower()
+                    if schedule_interval_clean.startswith("@") or len(schedule_interval.split()) in [5, 6]:
+                        is_time_schedule = True
+                        
+                if is_time_schedule:
+                    if "mapper" in partition_config or "wait_policy" in partition_config:
+                        raise ValueError(
+                            f"Configuration error for '{source_name}': "
+                            f"Cron schedules cannot be combined with 'mapper' or 'wait_policy'."
+                        )
+                    cron_map = {
+                        "@hourly": "0 * * * *",
+                        "@daily": "0 0 * * *",
+                        "@weekly": "0 0 * * 0",
+                        "@monthly": "0 0 1 * *",
+                        "@yearly": "0 0 1 1 *",
+                    }
+                    cron_str = cron_map.get(schedule_interval, schedule_interval)
+                    schedule_interval = CronPartitionTimetable(cron_str, timezone=timezone)
+                else:
+                    schedule_interval = PartitionedAssetTimetable(
+                        assets=inlets[0] if len(inlets) == 1 else AssetAll(*inlets),
+                        default_partition_mapper=mapper
+                    )
+                    
+        # Determine max_active_runs
+        explicit_max_active_runs = schedule_config.get("max_active_runs")
+        if not is_partitioned:
+            max_active_runs = 1
+        else:
+            tenant_pool_slots = None
+            if pool:
+                # Retrieve from global settings directly
+                tenants_config = self.global_settings.get("tenants", {})
+                tenant_config = tenants_config.get(tenant_id, {})
+                tenant_pool_slots = tenant_config.get("slots")
+                
+            if tenant_pool_slots is not None:
+                default_runs = min(8, max(1, tenant_pool_slots // 2))
+            else:
+                default_runs = 8
+                
+            if explicit_max_active_runs is not None:
+                if tenant_pool_slots is not None and explicit_max_active_runs > tenant_pool_slots:
+                    log.warning(
+                        f"Explicit max_active_runs {explicit_max_active_runs} exceeds tenant pool slots {tenant_pool_slots}. Clamping to {tenant_pool_slots}.",
+                        dag_id=dag_id
+                    )
+                    max_active_runs = tenant_pool_slots
+                else:
+                    max_active_runs = explicit_max_active_runs
+            else:
+                max_active_runs = default_runs
+
         # =======================================================================
         # CREATE DAG USING @dag DECORATOR
         # =======================================================================
         
-        @dag(
-            dag_id=dag_id,
-            description=f"Data integration pipeline for {source_name} (tenant: {tenant_id})",
-            schedule=schedule_interval,
-            start_date=start_date,
-            end_date=end_date,
-            catchup=catchup,
-            tags=tags,
-            max_active_runs=1,
-            default_args=default_args,
-            deadline=deadline,
-            params={"tenant_id": tenant_id, "tenant_pool": pool},
-        )
+        dag_kwargs = {
+            "dag_id": dag_id,
+            "description": f"Data integration pipeline for {source_name} (tenant: {tenant_id})",
+            "schedule": schedule_interval,
+            "start_date": start_date,
+            "end_date": end_date,
+            "catchup": catchup,
+            "tags": tags,
+            "max_active_runs": max_active_runs,
+            "default_args": default_args,
+            "deadline": deadline,
+            "params": {"tenant_id": tenant_id, "tenant_pool": pool},
+        }
+
+        if "rerun_with_latest_version" in metadata:
+            dag_kwargs["rerun_with_latest_version"] = metadata["rerun_with_latest_version"]
+        
+        @dag(**dag_kwargs)
         def create_pipeline():
             """
             TaskFlow pipeline definition.
@@ -238,10 +395,12 @@ class DAGFactoryV2:
             )
             
             if has_transformation:
+                # cast: TaskFlow passes an XComArg placeholder that resolves to the
+                # declared type (str path) at runtime.
                 transform_task = transform_data.override(
                     task_id="apply_transformations",
                     pool=pool,
-                )(ingest_task, config)
+                )(cast(str, ingest_task), config)
                 current_df = transform_task
             else:
                 current_df = ingest_task
@@ -255,14 +414,16 @@ class DAGFactoryV2:
             
             if has_validation:
                 # Run DQ checks - returns (valid_df, invalid_df, dq_results)
-                dq_task = validate_data_quality.override(
+                # cast: the call returns a PlainXComArg (supports __getitem__ for
+                # dict key access) but is typed as the base XComArg.
+                dq_task = cast(Any, validate_data_quality.override(
                     task_id="run_quality_checks",
                     pool=pool,
-                )(current_df, config)
-                
-                valid_df = dq_task[0]
-                invalid_df = dq_task[1]
-                dq_results = dq_task[2]
+                )(cast(str, current_df), config))
+
+                valid_df = dq_task["valid_path"]
+                invalid_df = dq_task["invalid_path"]
+                dq_results = dq_task["results"]
                 
                 # Check if quarantine is enabled
                 quality_gates = validation_config.get("quality_gates", {})
@@ -280,7 +441,6 @@ class DAGFactoryV2:
                         task_id="load_valid_data",
                         outlets=outlets or [],
                         pool=pool,
-                        trigger_rule="none_failed",
                     )(valid_df, config)
                     
                     # Branch 2: Quarantine invalid data
@@ -294,51 +454,63 @@ class DAGFactoryV2:
                     hitl_config = quarantine_config.get("hitl", {})
                     hitl_enabled = hitl_config.get("enabled", False)
                     
-                    if hitl_enabled and HITL_AVAILABLE and ApprovalOperator:
-                        # Prepare HITL approval context
-                        approval_context_task = prepare_hitl_approval_context.override(
-                            task_id="prepare_manual_review",
+                    if hitl_enabled:
+                        from airflow.providers.standard.operators.hitl import ApprovalOperator
+                        from airflow.sdk import Param
+                        from datetime import timedelta
+                        
+                        timeout_hours = hitl_config.get("timeout_hours", 24)
+                        
+                        # 1. Prepare context
+                        approval_context = prepare_hitl_approval_context.override(
+                            task_id="prepare_hitl_approval_context",
                             pool=pool,
-                        )(quarantine_task, config)
+                        )(cast(str, quarantine_task), config)
                         
-                        # HITL approval using ApprovalOperator (not @task decorator!)
-                        # ApprovalOperator must be instantiated as an operator in the DAG
-                        # timeout_hours = hitl_config.get("timeout_hours", 24)
-                        # assigned_users = hitl_config.get("assigned_users", [])
-                        
-                        # Note: This is a placeholder showing the structure
-                        # ApprovalOperator needs to be added to the DAG context directly
-                        # See Airflow 3.1.6 HITL documentation for full implementation
-                        
-                        # For now, process without HITL (auto-approve)
-                        log.warning(
-                            "HITL approval enabled in config but requires ApprovalOperator "
-                            "instantiation in DAG context. Falling back to auto-approve. "
-                            "See dags/utils/dag_factory_v2.py line 280+ for HITL implementation notes."
+                        # 2. Instantiate ApprovalOperator
+                        hitl_approval_task = ApprovalOperator(
+                            task_id="quarantine_approval",
+                            subject="Quarantine Release Approval for {{ dag.dag_id }}",
+                            body="""
+## Quarantine Summary
+- **Total Records**: {{ ti.xcom_pull(task_ids='prepare_hitl_approval_context')['quarantine_summary']['total_records'] }}
+- **Failed Checks**: {{ ti.xcom_pull(task_ids='prepare_hitl_approval_context')['quarantine_summary']['failed_checks'] | join(', ') }}
+- **Quarantine Time**: {{ ti.xcom_pull(task_ids='prepare_hitl_approval_context')['quarantine_summary']['quarantine_time'] }}
+
+Please review the quarantined records.
+""",
+                            params={
+                                "notes": Param(type="string", default="", description="Approval Notes")
+                            },
+                            response_timeout=timedelta(hours=timeout_hours),
+                            pool=pool,
                         )
                         
-                        processed_task = process_approval_decision.override(
-                            task_id="auto_approve_quarantine",
+                        # 3. Process the decision
+                        process_decision_task = process_approval_decision.override(
+                            task_id="process_approval_decision",
                             pool=pool,
-                        )(approval_context_task, quarantine_task, config)
+                        )(
+                            approval_result=cast(Dict[str, Any], hitl_approval_task.output),
+                            quarantine_df_path=cast(str, quarantine_task),
+                            config=config,
+                        )
                         
-                        # Load approved quarantine records
+                        # 4. Load quarantine records
                         load_quarantine_task = load_data.override(
                             task_id="load_quarantine_records",
                             pool=pool,
-                            trigger_rule="none_failed",
-                        )(processed_task, config)
+                        )(cast(str, process_decision_task), config)
                         
                         # Wire dependencies
                         router >> [load_valid_task, quarantine_task]
-                        quarantine_task >> approval_context_task >> processed_task >> load_quarantine_task
+                        quarantine_task >> approval_context >> hitl_approval_task >> process_decision_task >> load_quarantine_task
                     else:
                         # Auto-approve quarantine (no HITL)
                         load_quarantine_task = load_data.override(
                             task_id="load_quarantine_records",
                             pool=pool,
-                            trigger_rule="none_failed",
-                        )(quarantine_task, config)
+                        )(cast(str, quarantine_task), config)
                         
                         # Wire dependencies
                         router >> [load_valid_task, quarantine_task]
@@ -356,14 +528,16 @@ class DAGFactoryV2:
                     task_id="load_data",
                     outlets=outlets or [],
                     pool=pool,
-                )(current_df, config)
+                )(cast(str, current_df), config)
             
             # Wire Kafka health check to ingestion
             if kafka_health_task:
                 kafka_health_task >> ingest_task
 
         # Instantiate the DAG
-        pipeline_dag = create_pipeline()
+        # cast: the @dag stub types the call as the wrapped function's return
+        # (None), but it returns the built DAG at runtime
+        pipeline_dag = cast(DAG, create_pipeline())
         
         log.info(
             "Created TaskFlow DAG with multi-tenancy",
@@ -377,7 +551,7 @@ class DAGFactoryV2:
 
     def _create_deadline_alert(
         self, dag_id: str, schedule_config: Dict[str, Any]
-    ) -> Optional[DeadlineAlert]:
+    ) -> Optional[List[DeadlineAlert]]:
         """
         Create deadline alert configuration from schedule config.
 
@@ -389,52 +563,69 @@ class DAGFactoryV2:
             schedule_config: Schedule configuration from YAML
 
         Returns:
-            DeadlineAlert or None if not configured
+            List of DeadlineAlerts or None if not configured
         """
         deadline_config = schedule_config.get("deadline", {})
 
-        if not deadline_config.get("enabled", False):
+        if not deadline_config:
             return None
+            
+        # Support both single config (back-compat) or tiers array
+        tiers = deadline_config.get("tiers", [deadline_config])
 
-        if CompositeDeadlineNotifier is None:
-            log.warning(
-                "Deadline alerts disabled - CompositeDeadlineNotifier not available",
+        alerts: List[DeadlineAlert] = []
+        for tier in tiers:
+            if not tier.get("enabled", False):
+                continue
+
+            if CompositeDeadlineNotifier is None:
+                log.warning(
+                    "Deadline alerts disabled - CompositeDeadlineNotifier not available",
+                    dag_id=dag_id,
+                )
+                continue
+
+            # Get timeout in minutes (default 30)
+            timeout_minutes = tier.get("timeout_minutes", 30)
+
+            # Email configuration (Kafka is always on)
+            email_enabled = tier.get("email_enabled", False)
+            email_recipients = tier.get("email_recipients", [])
+
+            # Get Kafka topic for alerts
+            kafka_topic = tier.get("kafka_topic", "pipeline-alerts")
+            
+            # Reference
+            ref_str = tier.get("reference", "queued_at").upper()
+            reference = DeadlineReference.AVERAGE_RUNTIME() if "AVERAGE" in ref_str else DeadlineReference.DAGRUN_QUEUED_AT
+
+            log.info(
+                "Creating deadline alert tier",
                 dag_id=dag_id,
+                timeout_minutes=timeout_minutes,
+                email_enabled=email_enabled,
+                kafka_topic=kafka_topic,
+                reference=ref_str,
             )
-            return None
 
-        # Get timeout in minutes (default 30)
-        timeout_minutes = deadline_config.get("timeout_minutes", 30)
-
-        # Email configuration (Kafka is always on)
-        email_enabled = deadline_config.get("email_enabled", False)
-        email_recipients = deadline_config.get("email_recipients", [])
-
-        # Get Kafka topic for alerts
-        kafka_topic = deadline_config.get("kafka_topic", "pipeline-alerts")
-
-        log.info(
-            "Creating deadline alert",
-            dag_id=dag_id,
-            timeout_minutes=timeout_minutes,
-            email_enabled=email_enabled,
-            kafka_topic=kafka_topic,
-        )
-
-        return DeadlineAlert(
-            reference=DeadlineReference.DAGRUN_QUEUED_AT,
-            interval=timedelta(minutes=timeout_minutes),
-            callback=AsyncCallback(
-                CompositeDeadlineNotifier,
-                kwargs={
-                    "topic": kafka_topic,
-                    "message": f"Pipeline {dag_id} missed deadline of {timeout_minutes} minutes",
-                    "email_enabled": email_enabled,
-                    "email_recipients": email_recipients,
-                    "email_subject": f"🚨 Deadline Alert: {dag_id}",
-                },
-            ),
-        )
+            alerts.append(
+                DeadlineAlert(
+                    reference=reference,
+                    interval=timedelta(minutes=timeout_minutes),
+                    callback=SyncCallback(
+                        CompositeDeadlineNotifier,
+                        kwargs={
+                            "topic": kafka_topic,
+                            "message": f"Pipeline {dag_id} missed deadline of {timeout_minutes} minutes",
+                            "email_enabled": email_enabled,
+                            "email_recipients": email_recipients,
+                            "email_subject": f"🚨 Deadline Alert: {dag_id}",
+                        },
+                    ),
+                )
+            )
+            
+        return alerts if alerts else None
 
     def _create_assets(self, config: Dict[str, Any]) -> tuple[List[Asset], List[Asset]]:
         """
@@ -572,7 +763,13 @@ class DAGFactoryV2:
             # Parse date string and apply timezone
             # pendulum.parse handles YYYY-MM-DD format and sets time to midnight
             dt = pendulum.parse(date_string, tz=timezone)
-            
+
+            # pendulum.parse can return Date/Time/Duration for non-datetime strings
+            if not isinstance(dt, pendulum.DateTime):
+                raise ValueError(
+                    f"Expected a datetime but got {type(dt).__name__}"
+                )
+
             log.debug(
                 f"Parsed {field_name} with timezone",
                 dag_id=dag_id,
@@ -580,9 +777,9 @@ class DAGFactoryV2:
                 date_string=date_string,
                 timezone=timezone,
                 parsed_datetime=str(dt),
-                is_dst=dt.is_dst() if hasattr(dt, 'is_dst') else None
+                is_dst=dt.is_dst()
             )
-            
+
             return dt
             
         except Exception as e:
@@ -695,7 +892,8 @@ class DAGFactoryV2:
     def _create_default_args(
         self, 
         tenant_id: str, 
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        schedule_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create default arguments for DAGs with tenant owner mapping and bundle metadata."""
         defaults = self.global_settings.get("default_settings", {})
@@ -717,5 +915,24 @@ class DAGFactoryV2:
             "bundle_name": self.bundle_name,
             "bundle_version": self.bundle_version,
         }
+        
+        # Configure retry policy
+        schedule = schedule_config or {}
+        retry_config = schedule.get("retry", {})
+        
+        # Numeric backoff
+        if "exponential_backoff" in retry_config:
+            default_args["retry_exponential_backoff"] = retry_config["exponential_backoff"]
+            
+        if "retry_delay_seconds" in retry_config:
+            default_args["retry_delay"] = timedelta(seconds=retry_config["retry_delay_seconds"])
+            
+        if "max_retries" in retry_config:
+            default_args["retries"] = retry_config["max_retries"]
+            
+        # Apply transient retry policy if configured
+        if retry_config.get("policy") == "transient":
+            from rlam_airflow_framework.retry_policy import build_transient_retry_policy
+            default_args["retry_policy"] = build_transient_retry_policy(retry_config)
         
         return default_args

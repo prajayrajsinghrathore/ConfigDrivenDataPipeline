@@ -49,7 +49,7 @@ class TestDagIntegrity:
             )
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
 
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
+            return DagBag(dag_folder=str(DAGS_FOLDER))
         except ImportError:
             pytest.skip("Airflow not installed")
 
@@ -94,7 +94,7 @@ class TestDagMetadata:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
+            return DagBag(dag_folder=str(DAGS_FOLDER))
         except ImportError:
             pytest.skip("Airflow not installed")
 
@@ -145,7 +145,7 @@ class TestDagTasks:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
+            return DagBag(dag_folder=str(DAGS_FOLDER))
         except ImportError:
             pytest.skip("Airflow not installed")
 
@@ -194,7 +194,7 @@ class TestDagSchedule:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
+            return DagBag(dag_folder=str(DAGS_FOLDER))
         except ImportError:
             pytest.skip("Airflow not installed")
 
@@ -232,9 +232,10 @@ class TestGeneratedDags:
     def test_dag_generator_creates_dags(self, data_sources_dir):
         """Test that DAG generator creates DAGs from configs."""
         try:
-            from generate_dags import generate_dags_from_configs
+            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            dags = generate_dags_from_configs()
+            dag_factory = DAGFactoryV2()
+            dags = dag_factory.create_all_dags()
 
             # May have more or less depending on config validity
             assert len(dags) >= 0
@@ -244,7 +245,7 @@ class TestGeneratedDags:
     def test_dag_generation_handles_invalid_config(self, temp_config_file):
         """Test that DAG generator handles invalid configs gracefully."""
         try:
-            from generate_dags import generate_dag_from_config
+            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
             invalid_config = {
                 # Missing required fields
@@ -253,7 +254,8 @@ class TestGeneratedDags:
 
             # Should either return None or raise clear exception
             try:
-                dag = generate_dag_from_config(invalid_config)
+                dag_factory = DAGFactoryV2()
+                dag = dag_factory.create_dag_from_config(invalid_config)
                 assert dag is None or dag is not None  # Either outcome OK
             except (ValueError, KeyError):
                 pass  # Expected behavior
@@ -938,26 +940,26 @@ class TestDAGFactoryCreateAssets:
 class TestAirflow316ConfigLoading:
     """Test loading Airflow 3.1.6 config fixture (runs on Windows)."""
 
-    def test_load_test_config_fixture(self, airflow_316_config):
+    def test_load_test_config_fixture(self, airflow_330_config):
         """Test that the test config fixture loads correctly."""
-        assert airflow_316_config is not None
-        assert "data_source" in airflow_316_config
-        assert "schedule" in airflow_316_config
-        assert "destination" in airflow_316_config
+        assert airflow_330_config is not None
+        assert "data_source" in airflow_330_config
+        assert "schedule" in airflow_330_config
+        assert "destination" in airflow_330_config
 
-    def test_deadline_config_present(self, airflow_316_config):
+    def test_deadline_config_present(self, airflow_330_config):
         """Test deadline configuration is present in fixture."""
-        deadline = airflow_316_config.get("schedule", {}).get("deadline", {})
+        deadline = airflow_330_config.get("schedule", {}).get("deadline", {})
+        assert deadline is not None
+        assert deadline.get("tiers")[0].get("enabled") is True
+        assert deadline.get("tiers")[1].get("timeout_minutes") == 45
+        assert deadline.get("tiers")[1].get("email_enabled") is True
+        assert len(deadline.get("tiers")[1].get("email_recipients", [])) == 2
 
-        assert deadline.get("enabled") is True
-        assert deadline.get("timeout_minutes") == 45
-        assert deadline.get("email_enabled") is True
-        assert len(deadline.get("email_recipients", [])) == 2
-
-    def test_hitl_config_present(self, airflow_316_config):
+    def test_hitl_config_present(self, airflow_330_config):
         """Test HITL configuration is present in fixture."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
@@ -968,8 +970,9 @@ class TestAirflow316ConfigLoading:
 
     def test_deadline_config_fixture(self, deadline_config):
         """Test dedicated deadline config fixture."""
-        assert deadline_config.get("enabled") is True
-        assert deadline_config.get("kafka_topic") == "test-pipeline-alerts"
+        assert deadline_config is not None
+        assert deadline_config.get("tiers")[0].get("enabled") is True
+        assert deadline_config.get("tiers")[0].get("kafka_topic") == "test-pipeline-alerts"
 
     def test_hitl_config_fixture(self, hitl_config):
         """Test dedicated HITL config fixture."""

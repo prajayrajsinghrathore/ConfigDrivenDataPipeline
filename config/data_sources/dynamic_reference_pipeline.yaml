@@ -1,0 +1,16 @@
+metadata:
+  tenant: sandbox
+  description: "Phase 0 Validation"
+data_source:
+  name: dynamic_reference_pipeline
+  type: rest_api
+  endpoint: https://official-joke-api.appspot.com/random_joke
+schedule:
+  interval: "0 0 * * *"
+  start_date: "2024-01-01"
+transformation:
+  new_columns:
+    doubled_value: "id * 2"
+destination:
+  primary:
+    type: print_logs

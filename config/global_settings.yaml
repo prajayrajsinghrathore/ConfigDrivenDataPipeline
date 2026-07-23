@@ -9,9 +9,15 @@ default_args:
 tenants:
   testing:
     pool: default_pool
+    slots: 8
     connection_prefix: test_
+  sandbox:
+    pool: default_pool
+    slots: 16
+    connection_prefix: sandbox_
   development:
     pool: default_pool
+    slots: 16
     connection_prefix: dev_
 
 kafka:

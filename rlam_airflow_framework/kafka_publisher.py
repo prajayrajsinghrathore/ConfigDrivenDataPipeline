@@ -25,7 +25,7 @@ import time
 from enum import Enum
 
 if TYPE_CHECKING:
-    from utils.tenant_context import TenantContext
+    from rlam_airflow_framework.tenant_context import TenantContext
 
 log = structlog.get_logger(__name__)
 
@@ -43,9 +43,9 @@ KAFKA_CIRCUIT_RECOVERY_TIMEOUT = float(os.getenv("TIMEOUT_KAFKA_CIRCUIT_RECOVERY
 
 # Import tenant context for multi-tenancy support
 try:
-    from utils.tenant_context import TenantContext as TenantContextClass
+    from rlam_airflow_framework.tenant_context import TenantContext
 except ImportError:
-    TenantContextClass = None
+    TenantContext = None
 
 
 class CircuitState(Enum):
@@ -476,7 +476,7 @@ class KafkaEventPublisher:
 
             event = {
                 "event_type": "data_load",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "data_source": {"type": data_source, "name": data_source},
@@ -572,7 +572,7 @@ class KafkaEventPublisher:
             # Create event payload
             event = {
                 "event_type": event_type,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "execution_date": execution_date,
@@ -647,7 +647,7 @@ class KafkaEventPublisher:
             # Create event payload with bundle metadata
             event = {
                 "event_type": "data_quality_check",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "execution_date": execution_date.isoformat()

@@ -222,3 +222,32 @@ helm upgrade airflow apache-airflow/airflow \
 - [ ] Re-run failed DAGs if needed
 - [ ] Document rollback in incident log
 - [ ] Create fix and deploy new version
+
+## Rerun Behavior (`rerun_with_latest_version`)
+
+By default in Airflow 3.3.0, retrying a failed task or clearing a DAG Run executes the task against its original bound DAG version. This ensures deterministic behavior and reproducibility.
+
+However, if a pipeline failed due to a bug in the code or a misconfiguration, you might want the retry to execute the *fixed* version rather than the original buggy version.
+
+### How to use `rerun_with_latest_version`
+
+You can control this behavior via the pipeline YAML configuration `metadata` block:
+
+```yaml
+metadata:
+  tenant: marketing
+  owner: data-eng
+  rerun_with_latest_version: true
+```
+
+- `rerun_with_latest_version: false` (Default): Retries use the historical bound version.
+- `rerun_with_latest_version: true`: Retries will "upgrade" the DAG Run to the latest DAG version and execute the new logic.
+
+### Operational Guidelines
+
+1. **For transient failures (API timeouts, DB locks):** Leave `rerun_with_latest_version: false`. The existing logic is correct, and the failure is environmental.
+2. **For logic bugs (incorrect transformations, wrong schemas):**
+   - Push a fix to the DAG bundle.
+   - Update the configuration to set `rerun_with_latest_version: true`.
+   - Clear the failed tasks. They will pick up the new logic.
+   - Once the backfill or recovery is complete, it is recommended to revert `rerun_with_latest_version` back to `false` for stability.

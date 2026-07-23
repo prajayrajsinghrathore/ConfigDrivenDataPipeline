@@ -54,7 +54,7 @@ DEFAULT_SNOWFLAKE_CONN_ID = os.getenv("SNOWFLAKE_CONN_ID", "snowflake-default")
 
 # Import tenant context for multi-tenancy support
 try:
-    from utils.tenant_context import TenantContext
+    from rlam_airflow_framework.tenant_context import TenantContext
 except ImportError:
     TenantContext = None
 
@@ -391,6 +391,8 @@ def load_to_snowflake(
     if_exists: Literal["append", "replace", "fail"] = "append",
     batch_size: int = DEFAULT_BATCH_SIZE,
     correlation_id: Optional[str] = None,
+    partition_column: Optional[str] = None,
+    partition_value: Optional[str] = None,
 ) -> str:
     """
     Load DataFrame to Snowflake table using transactional INSERT statements.
@@ -464,7 +466,7 @@ def load_to_snowflake(
             start_time = time.time()
 
             # DDL operations (outside transaction - auto-commit in Snowflake)
-            if if_exists == "replace":
+            if if_exists == "replace" and not partition_column:
                 logger.info(f"[{trace_id}] Dropping existing table {full_table_name}")
                 hook.run(f"DROP TABLE IF EXISTS {full_table_name}")
 
@@ -478,6 +480,12 @@ def load_to_snowflake(
             hook.run("BEGIN TRANSACTION")
             transaction_started = True
             logger.debug(f"[{trace_id}] Transaction started")
+
+            # If partitioned replace, delete old partition data first
+            if if_exists == "replace" and partition_column and partition_value:
+                delete_sql = f"DELETE FROM {full_table_name} WHERE \"{partition_column}\" = '{partition_value}'"
+                hook.run(delete_sql)
+                logger.info(f"[{trace_id}] Deleted partition data from {full_table_name} for partition {partition_column}={partition_value}")
 
             # Insert data in batches (all within same transaction)
             total_rows = len(df)

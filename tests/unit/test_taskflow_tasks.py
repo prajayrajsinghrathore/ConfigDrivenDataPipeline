@@ -343,3 +343,91 @@ class TestConfigValidation:
         assert "test_dag" in correlation_id
         assert "test_run_123" in correlation_id
         assert "test_task" in correlation_id
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("airflow.sdk.Variable")
+    def test_ingest_data_incremental_watermark_filtering(self, mock_variable, mock_context, tmp_path):
+        from unittest.mock import MagicMock
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123"
+        }
+        mock_variable.get.return_value = "2024-01-05T00:00:00"
+        
+        config = {
+            "metadata": {"dag_id": "test_dag", "run_id": "test_run_123", "task_id": "test_task"},
+            "data_source": {
+                "name": "test",
+                "type": "rest_api",
+                "endpoint": "https://example.com/api/v1/data?ts={{ watermark }}",
+                "response_format": "json"
+            },
+            "incremental": {
+                "enabled": True,
+                "watermark_column": "updated_at",
+                "initial_watermark": "2024-01-01T00:00:00"
+            }
+        }
+        
+        with patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data") as mock_fetch:
+            import pandas as pd
+            df = pd.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
+            mock_fetch.return_value = df
+            
+            from rlam_airflow_framework.taskflow_tasks import ingest_data
+            ingest_data(config)
+            
+            # The watermark from the Variable should be used
+            mock_fetch.assert_called_once()
+            called_url = mock_fetch.call_args.kwargs.get("url")
+            assert "2024-01-05T00:00:00" in called_url
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("airflow.sdk.Variable")
+    def test_load_data_advances_watermark(self, mock_variable, mock_context, tmp_path):
+        from unittest.mock import MagicMock
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123"
+        }
+        from rlam_airflow_framework.taskflow_tasks import load_data
+        
+        import pandas as pd
+        # Create a test dataframe with watermark column
+        df = pd.DataFrame({
+            "updated_at": [
+                pd.Timestamp("2024-01-01T00:00:00"),
+                pd.Timestamp("2024-01-10T00:00:00")
+            ],
+            "amount": [100, 200]
+        })
+        
+        df_path = str(tmp_path / "test_load_watermark_test_run_123.parquet")
+        df.to_parquet(df_path)
+        
+        config = {
+            "metadata": {"dag_id": "test_dag", "run_id": "test_run_123", "task_id": "test_task", "data_path": df_path},
+            "destination": {
+                "primary": {"type": "print_logs"}
+            },
+            "incremental": {
+                "enabled": True,
+                "watermark_column": "updated_at"
+            }
+        }
+        
+        res = load_data(df_path, config)
+        
+        assert "Primary: Printed 2 rows to logs" in res
+        
+        # Verify watermark was updated
+        assert mock_variable.set.call_count == 2
+        calls = mock_variable.set.call_args_list
+        # The first call sets the watermark
+        assert calls[0].args[0] == "test_dag.high_watermark"
+        assert "2024-01-10T00:00:00" in calls[0].args[1]
+        # The second call sets first_run_completed
+        assert calls[1].args[0] == "test_dag.first_run_completed"
+        assert calls[1].args[1] == "true"

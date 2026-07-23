@@ -510,15 +510,18 @@ class TestDataQualityCheckerPublishMetrics:
         results = {"status": "passed", "pass_rate": 1.0}
         checker._publish_dq_metrics(results)
 
-        mock_kafka.publish_quality_metrics.assert_called_once()
-        call_args = mock_kafka.publish_quality_metrics.call_args
+        mock_kafka.publish_pipeline_event.assert_called_once()
+        call_args = mock_kafka.publish_pipeline_event.call_args
         assert call_args.kwargs["dag_id"] == "test_dag"
         assert call_args.kwargs["task_id"] == "test_task"
+        assert call_args.kwargs["event_type"] == "data_quality_metrics"
+        assert call_args.kwargs["topic"] == "test-topic_dq_metrics"
+        assert call_args.kwargs["metadata"] == results
 
     @patch("rlam_airflow_framework.data_quality.kafka_publisher")
     def test_publish_dq_metrics_failure_handled(self, mock_kafka):
         """Test metrics publishing failure is handled gracefully."""
-        mock_kafka.publish_quality_metrics.side_effect = Exception(
+        mock_kafka.publish_pipeline_event.side_effect = Exception(
             "Kafka connection failed"
         )
 

@@ -14,6 +14,42 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 # No need to add dags/ since we're using the installed rlam_airflow_framework package
 
+# Save a clean copy of sys.modules before unit test conftest overrides it
+_original_sys_modules = sys.modules.copy()
+
+@pytest.fixture(autouse=True)
+def clean_sys_modules_for_non_unit_tests(request):
+    """Restore original sys.modules for non-unit tests to avoid mock pollution.
+
+    Only performs the swap when the unit-lane Airflow mocks are actually installed
+    (i.e. unit tests ran earlier in this process). When integration/e2e/dag lanes
+    run in their own pytest process against real Airflow, deleting and re-importing
+    modules mid-session corrupts per-class registries (e.g. PyYAML constructor
+    registration used by airflow.configuration) — so we must not touch sys.modules.
+    """
+    node_path = str(request.node.fspath).replace("\\", "/")
+    is_unit_test = "tests/unit" in node_path
+    mocks_installed = isinstance(sys.modules.get("airflow"), MagicMock)
+
+    if not is_unit_test and mocks_installed:
+        # Save mock modules
+        mocked_modules = sys.modules.copy()
+        
+        # Restore original modules
+        for key in list(sys.modules.keys()):
+            if key not in _original_sys_modules:
+                del sys.modules[key]
+            else:
+                sys.modules[key] = _original_sys_modules[key]
+                
+        yield
+        
+        # Re-apply mocks
+        sys.modules.clear()
+        sys.modules.update(mocked_modules)
+    else:
+        yield
+
 # =============================================================================
 # ENVIRONMENT SETUP
 # =============================================================================
@@ -624,7 +660,7 @@ def fixtures_dir() -> Path:
 
 
 @pytest.fixture
-def airflow_316_config(fixtures_dir) -> dict:
+def airflow_330_config(fixtures_dir) -> dict:
     """
     Load the Airflow 3.1.6 features test config.
 
@@ -632,22 +668,22 @@ def airflow_316_config(fixtures_dir) -> dict:
     """
     import yaml
 
-    config_path = fixtures_dir / "example_airflow_316_features.yaml"
+    config_path = fixtures_dir / "example_airflow_330_features.yaml"
     with open(config_path) as f:
         return yaml.safe_load(f)
 
 
 @pytest.fixture
-def deadline_config(airflow_316_config) -> dict:
+def deadline_config(airflow_330_config) -> dict:
     """Extract deadline configuration from test config."""
-    return airflow_316_config.get("schedule", {}).get("deadline", {})
+    return airflow_330_config.get("schedule", {}).get("deadline", {})
 
 
 @pytest.fixture
-def hitl_config(airflow_316_config) -> dict:
+def hitl_config(airflow_330_config) -> dict:
     """Extract HITL configuration from test config."""
     return (
-        airflow_316_config.get("destination", {}).get("quarantine", {}).get("hitl", {})
+        airflow_330_config.get("destination", {}).get("quarantine", {}).get("hitl", {})
     )
 
 

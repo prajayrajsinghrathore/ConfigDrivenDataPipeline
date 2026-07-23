@@ -1,4 +1,4 @@
-# File: dags/utils/data_quality.py
+ # File: dags/utils/data_quality.py
 """
 Data Quality module using Soda Core for validation and quality checks.
 
@@ -16,12 +16,12 @@ Airflow 3.1.6 Features:
 import pandas as pd
 import json
 import uuid
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, cast
 from datetime import datetime, timezone
 import structlog
 
 try:
-    from soda.scan import Scan
+    from soda.scan import Scan  # pyright: ignore[reportMissingImports]
 
     SODA_AVAILABLE = True
 except ImportError:
@@ -220,8 +220,8 @@ class DataQualityChecker:
         results["status"] = self._determine_status(results)
 
         # Split valid and invalid
-        valid_df = df[~invalid_mask].copy()
-        invalid_df = df[invalid_mask].copy()
+        valid_df = cast(pd.DataFrame, df[~invalid_mask].copy())
+        invalid_df = cast(pd.DataFrame, df[invalid_mask].copy())
 
         results["valid_rows"] = len(valid_df)
         results["invalid_rows"] = len(invalid_df)
@@ -240,7 +240,7 @@ class DataQualityChecker:
         check_type = check.get("type", "custom")
         column = check.get("column")
 
-        result = {
+        result: Dict[str, Any] = {
             "name": check_name,
             "type": check_type,
             "column": column,
@@ -263,7 +263,7 @@ class DataQualityChecker:
             elif check_type == "missing_count" and column:
                 # missing_count(column) = 0
                 max_missing = check.get("max", 0)
-                missing_count = df[column].isna().sum()
+                missing_count = cast(Any, df[column].isna().sum())
                 result["diagnostics"] = {
                     "missing_count": int(missing_count),
                     "max_allowed": max_missing,
@@ -304,11 +304,23 @@ class DataQualityChecker:
                         result["outcome"] = "fail"
                         invalid_mask |= invalid_rows
 
+            elif check_type == "max" and column:
+                threshold = check.get("threshold", 0)
+                actual_max = cast(Any, df[column].max())
+                result["diagnostics"] = {
+                    "actual_max": float(actual_max),
+                    "threshold": threshold,
+                }
+                if actual_max >= threshold:
+                    result["outcome"] = "fail"
+                    # Mark rows that exceed threshold as invalid
+                    invalid_mask |= df[column] >= threshold
+
             elif check_type == "values_in_set" and column:
                 # Check column values are in allowed set
                 allowed_values = check.get("valid_values", [])
                 invalid_rows = ~df[column].isin(allowed_values)
-                invalid_count = invalid_rows.sum()
+                invalid_count = cast(Any, invalid_rows.sum())
                 result["diagnostics"] = {"invalid_count": int(invalid_count)}
                 if invalid_count > 0:
                     result["outcome"] = "fail"
@@ -355,7 +367,7 @@ class DataQualityChecker:
         except Exception as e:
             log.warning("Check failed with error", check_name=check_name, error=str(e))
             result["outcome"] = "error"
-            result["diagnostics"]["error"] = str(e)
+            result["diagnostics"] = {**result.get("diagnostics", {}), "error": str(e)}
 
         return result
 
@@ -429,8 +441,8 @@ class DataQualityChecker:
 
         results["status"] = self._determine_status(results)
 
-        valid_df = df[~invalid_mask].copy()
-        invalid_df = df[invalid_mask].copy()
+        valid_df = cast(pd.DataFrame, df[~invalid_mask].copy())
+        invalid_df = cast(pd.DataFrame, df[invalid_mask].copy())
 
         results["valid_rows"] = len(valid_df)
         results["invalid_rows"] = len(invalid_df)
@@ -518,11 +530,22 @@ class DataQualityChecker:
         Publish DQ metrics to Kafka.
         """
         try:
-            kafka_publisher.publish_quality_metrics(
+            kafka_publisher.publish_pipeline_event(
                 dag_id=self.dag_id,
                 task_id=self.task_id,
-                metrics=results,
+                event_type="data_quality_metrics",
+                status=results.get("status", "unknown"),
+                message=(
+                    f"DQ scan for {self.source_name}: "
+                    f"{results.get('passed', 0)} passed, "
+                    f"{results.get('failed', 0)} failed, "
+                    f"{results.get('warnings', 0)} warnings"
+                ),
+                execution_date=results.get(
+                    "timestamp", datetime.now(timezone.utc).isoformat()
+                ),
                 topic=self.dq_topic,
+                metadata=results,
             )
         except Exception as e:
             log.warning("Failed to publish DQ metrics to Kafka", error=str(e))

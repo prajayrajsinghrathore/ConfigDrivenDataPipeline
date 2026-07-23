@@ -7,13 +7,14 @@ Registers pandas DataFrame serialization for XCom exchange between tasks.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
-from airflow.utils.module_loading import qualname
-
-if TYPE_CHECKING:
+try:
+    from airflow.utils.module_loading import qualname
+except ImportError:
+    # Airflow 3
+    from airflow.sdk._shared.module_loading import qualname
     import pandas as pd
-    from airflow.serialization.serde import U
+    from airflow.sdk.serde import U
 
 
 serializers = ["pandas.DataFrame"]

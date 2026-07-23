@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Import tenant context for multi-tenancy support
 try:
-    from utils.tenant_context import TenantContext, TenantValidationError
+    from rlam_airflow_framework.tenant_context import TenantContext, TenantValidationError
 except ImportError:
     # Fallback for testing or when running outside DAGs context
     TenantContext = None
