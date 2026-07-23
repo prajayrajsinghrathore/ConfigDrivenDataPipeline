@@ -474,3 +474,150 @@ class TestConfigValidation:
         # The second call sets first_run_completed
         assert calls[1].args[0] == "test_dag.first_run_completed"
         assert calls[1].args[1] == "true"
+
+
+class TestWatermarkSafetyAndPartitionEvents:
+    """Unit coverage for behavior previously only verified manually in the
+    3B.4 live e2e (2026-07-23): the watermark retry-safety invariant, the
+    strict-mode posture, and partition_key threading into Kafka events."""
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("airflow.sdk.Variable")
+    def test_failed_load_does_not_advance_watermark(self, mock_variable, mock_context, tmp_path):
+        """3A.2 invariant: a load failure must leave the stored watermark untouched."""
+        from rlam_airflow_framework.taskflow_tasks import load_data
+
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123",
+        }
+
+        df = pd.DataFrame({"id": [9, 10], "v": ["i", "j"]})
+        df_path = str(tmp_path / "wm_fail_test.parquet")
+        df.to_parquet(df_path)
+
+        config = {
+            "destination": {"primary": {"type": "print_logs"}},
+            "incremental": {"enabled": True, "watermark_column": "id"},
+        }
+
+        with patch(
+            "rlam_airflow_framework.taskflow_tasks._load_to_destination",
+            side_effect=RuntimeError("destination unavailable"),
+        ), patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher"):
+            with pytest.raises(RuntimeError, match="destination unavailable"):
+                load_data(df_path, config)
+
+        # The Variable write happens only after ALL destinations succeed
+        mock_variable.set.assert_not_called()
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("airflow.sdk.Variable")
+    def test_strict_mode_raises_when_watermark_lost_after_first_run(
+        self, mock_variable, mock_context, mock_temp_dir
+    ):
+        """3A.4: strict mode must refuse a silent full load once a first run completed."""
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123",
+        }
+
+        def variable_get(key, default=None):
+            if key == "test_dag.high_watermark":
+                return None  # watermark lost
+            if key == "test_dag.first_run_completed":
+                return "true"  # but a first run definitely completed
+            return default
+
+        mock_variable.get.side_effect = variable_get
+
+        config = {
+            "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/api"},
+            "incremental": {
+                "enabled": True,
+                "watermark_column": "id",
+                "initial_watermark": "0",
+                "strict": True,
+            },
+        }
+
+        with patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher"):
+            with pytest.raises(ValueError, match="strict mode"):
+                ingest_data(config)
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("airflow.sdk.Variable")
+    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    def test_non_strict_missing_watermark_full_loads_from_initial(
+        self, mock_kafka, mock_fetch, mock_variable, mock_context, mock_temp_dir
+    ):
+        """3A.4: non-strict missing watermark falls back to a full load from initial_watermark."""
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123",
+        }
+        mock_variable.get.return_value = None
+        mock_fetch.return_value = pd.DataFrame({"id": [1, 2], "v": ["a", "b"]})
+
+        config = {
+            "data_source": {
+                "name": "t",
+                "type": "rest_api",
+                "endpoint": "https://x/api?since={{ watermark }}",
+            },
+            "incremental": {
+                "enabled": True,
+                "watermark_column": "id",
+                "initial_watermark": "0",
+            },
+        }
+
+        result = ingest_data(config)
+        assert result.endswith(".parquet")
+        # Fetch used the initial watermark in the templated URL
+        assert mock_fetch.call_args.kwargs["url"] == "https://x/api?since=0"
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    def test_partition_key_threaded_into_kafka_event_metadata(
+        self, mock_kafka, mock_fetch, mock_context, mock_temp_dir
+    ):
+        """2A.4.2: partitioned ingest events must carry partition_key in metadata
+        (verified live 2026-07-23; this locks the contract)."""
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        mock_context.return_value = {
+            "dag": MagicMock(dag_id="test_dag"),
+            "task": MagicMock(task_id="test_task"),
+            "run_id": "test_run_123",
+            "partition_key": "2026-07-22",
+            "partition_date": None,
+        }
+        mock_fetch.return_value = pd.DataFrame({"id": [1], "event_date": ["2026-07-22"]})
+
+        config = {
+            "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/data"},
+            "partition": {"enabled": True, "column": "event_date"},
+        }
+
+        ingest_data(config)
+
+        events = {
+            c.kwargs["event_type"]: c.kwargs
+            for c in mock_kafka.publish_pipeline_event.call_args_list
+        }
+        assert events["ingestion_started"]["metadata"] == {"partition_key": "2026-07-22"}
+        completed_md = events["ingestion_completed"]["metadata"]
+        assert completed_md["partition_key"] == "2026-07-22"
+        assert completed_md["row_count"] == 1
+        # And the fetch itself was partition-scoped via the request param
+        assert mock_fetch.call_args.kwargs["params"] == {"event_date": "2026-07-22"}
