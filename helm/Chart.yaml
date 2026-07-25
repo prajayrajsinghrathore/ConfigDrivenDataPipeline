@@ -1,9 +1,9 @@
 apiVersion: v2
 name: rlam-airflow-pipeline
-description: RLAM Config-Driven Data Pipeline with Apache Airflow 3.1.6
+description: RLAM Config-Driven Data Pipeline with Apache Airflow 3.3.0
 type: application
-version: 1.0.0
-appVersion: "3.1.6"
+version: 2.0.0            # major bump: Airflow 3.1.6 -> 3.3.0 (breaking chart changes)
+appVersion: "3.3.0"
 keywords:
   - airflow
   - data-pipeline
@@ -12,3 +12,21 @@ keywords:
 home: https://dev.azure.com/rlam/data-platform
 maintainers:
   - name: RLAM Data Platform Team
+
+# ==============================================================================
+# DEPLOYMENT MODEL (read before deploying)
+# ==============================================================================
+# helm/values/production.yaml is a VALUES OVERRIDE for the OFFICIAL apache-airflow
+# Helm chart (https://airflow.apache.org/docs/helm-chart/stable/), NOT for this
+# metadata-only chart. Deploy with:
+#   helm upgrade --install airflow apache-airflow/airflow \
+#     --version <CHART_VERSION> -f helm/values/production.yaml -n airflow
+#
+# CHART_VERSION MUST be an official chart release that supports Airflow 3.3.0.
+# TODO(verify): pin the exact official chart version against its values schema
+# before deploying — do NOT assume a number. Airflow 3 renamed the `webserver`
+# component to `apiServer`; production.yaml has been reworked accordingly but the
+# block must be validated against the chosen chart's values.schema.json.
+#
+# If you instead want this to be a self-contained umbrella chart, declare the
+# official chart as a `dependencies:` entry here and run `helm dependency update`.

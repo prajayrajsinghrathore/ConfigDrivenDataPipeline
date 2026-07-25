@@ -2,7 +2,15 @@ x-airflow-common:
   &airflow-common
   # Using optimised multi-stage build image
   image: configdrivenpipeline:latest
-  build: ..
+  build:
+    context: ..
+    args:
+      # ZScaler CA trust for builds INSIDE the ZScaler-inspected network.
+      # Default false (inert outside). Set USE_ZSCALER_CERT=true in docker/.env
+      # for inside builds. NOTE: pulling the base image THROUGH ZScaler also
+      # requires the Docker DAEMON/host to trust the ZScaler CA — that is host
+      # config, outside this repo (see docker/.env.example).
+      USE_ZSCALER_CERT: ${USE_ZSCALER_CERT:-false}
   env_file:
     - .env
   environment:

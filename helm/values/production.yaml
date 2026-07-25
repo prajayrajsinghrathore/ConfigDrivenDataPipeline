@@ -7,7 +7,10 @@
 images:
   airflow:
     repository: rlmsbxdpluksacr.azurecr.io/airflow
-    tag: "3.1.6-custom"  # Custom image with framework code
+    # 3.3.0 engine image (framework + deadline notifiers baked in). Build/push
+    # via the engine CI (.azure-pipelines/ci.yml). Prefer pinning by DIGEST in
+    # production once the ACR 3.3.0 image exists (mirrors the Dockerfile base pin).
+    tag: "3.3.0-custom"
     pullPolicy: IfNotPresent
 
 # ==============================================================================
@@ -16,17 +19,23 @@ images:
 executor: "CeleryExecutor"  # For distributed task execution
 
 # ==============================================================================
-# DAG BUNDLE CONFIGURATION
+# DAG BUNDLE CONFIGURATION  (Task 3C.4 — engine/content split)
 # ==============================================================================
-# Configure multiple DAG bundles for separation of framework and configs
-# Airflow 3.x supports versioned bundles for reproducible runs
+# Two-bundle model that realizes the engine-vs-content separation:
+#   - "framework"  = the ENGINE. generate_dags.py + rlam_airflow_framework (incl.
+#     the deadline notifiers, folded into the package 2026-07-23) ship BAKED into
+#     the image at /opt/airflow/dags — a LocalDagBundle, versioned by image tag.
+#   - "production_configs" = the CONTENT. Pipeline YAMLs come from the SEPARATE
+#     config repo via GitDagBundle — NEVER baked into the image, so a bad config
+#     rolls back by moving a git tag with no image rebuild.
+# This is why no `config/data_sources/*.yaml` is copied into the Dockerfile.
 
 config:
   # DAG processor configuration for bundle support
   dag_processor:
     # Path where DAG bundles will be stored/cached
     dag_bundle_storage_path: "/opt/airflow/bundle_storage"
-    
+
     # List of DAG bundles to load
     # IMPORTANT: Whitespace on last line matters for configparser
     dag_bundle_config_list: |
@@ -43,14 +52,19 @@ config:
           "name": "production_configs",
           "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
           "kwargs": {
-            "tracking_ref": "refs/heads/develop",
+            "tracking_ref": "refs/tags/prod-v1.0.0",
             "git_conn_id": "github_configs",
             "subdir": "config",
             "refresh_interval": 300,
-            "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/develop/config/{subdir}"
+            "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/prod-v1.0.0/config/{subdir}"
           }
         }
       ]
+    # ROLLBACK (ROLLBACK_STRATEGY.md): production pins a TAG, not a branch. The
+    # config repo's CI (.azure-pipelines/config.yml, which belongs in that repo)
+    # tags prod-vX.Y.Z after the schema/unknown-key contract passes; roll back by
+    # pointing tracking_ref at the previous tag and `helm upgrade`. Bump the
+    # env[AIRFLOW_DAG_BUNDLE_VERSION] value below to match the tag.
   
 
 # ==============================================================================
@@ -61,7 +75,7 @@ env:
   - name: AIRFLOW_DAG_BUNDLE_NAME
     value: "production_configs"
   - name: AIRFLOW_DAG_BUNDLE_VERSION
-    value: "develop"  # Tracking develop branch
+    value: "prod-v1.0.0"  # MUST match tracking_ref tag above (rollback: bump both together)
   
   # Multi-tenancy config path
   - name: AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_STORAGE_PATH
@@ -115,6 +129,27 @@ connections:
       {
         "git_executable": "/usr/bin/git"
       }
+
+  # Deadline-alert Kafka connection — mirrors the compose `airflow connections
+  # add kafka_default` seed (Phase 1.3). The SyncCallback deadline notifier reads
+  # THIS DB-stored connection (3.3.0 #65269). In-cluster Kafka service host.
+  - conn_id: kafka_default
+    conn_type: kafka
+    extra: |
+      {
+        "bootstrap.servers": "kafka.default.svc.cluster.local:9092",
+        "security.protocol": "PLAINTEXT"
+      }
+
+  # SMTP connection for the optional email deadline notifier. Point host/login
+  # at the real relay; keep the default validating STARTTLS context for a
+  # CA-signed server (set ssl_context=none only for a self-signed relay).
+  - conn_id: smtp_default
+    conn_type: smtp
+    host: smtp.internal.rlam.example    # TODO: real SMTP relay
+    port: 587
+    login: ""                            # TODO: from a K8s secret if authenticated
+    password: ""
 
 # ==============================================================================
 # SECRETS CONFIGURATION
@@ -170,16 +205,22 @@ scheduler:
       value: "30"  # Min time between re-parsing a DAG
 
 # ==============================================================================
-# WEBSERVER CONFIGURATION (ISTIO Integration)
+# API SERVER CONFIGURATION (Airflow 3 — was `webserver` in 2.x / 3.1.x charts)
 # ==============================================================================
-webserver:
+# Airflow 3 replaced the webserver with the FastAPI API server; the official
+# Helm chart renamed the `webserver:` block to `apiServer:`.
+# TODO(verify): confirm the key name AND sub-keys (service/resources/replicas)
+# against the chosen chart's values.schema.json — the chart may also have moved
+# to `apiServer.service`/`apiServer.replicas` with different defaults. Do not
+# assume this block is complete; validate with `helm template ... --dry-run`.
+apiServer:
   replicas: 2
   service:
     type: ClusterIP  # ISTIO gateway will handle external access
     annotations:
       # ISTIO sidecar injection
       sidecar.istio.io/inject: "true"
-  
+
   resources:
     requests:
       cpu: "500m"
@@ -208,11 +249,34 @@ workers:
 # ==============================================================================
 # TENANT-SPECIFIC RESOURCE POOLS
 # ==============================================================================
-# Pools are created via global_settings.yaml, referenced here for documentation
-# operations_pool: 32 slots
-# reporting_pool: 16 slots
-# esg_pool: 8 slots
-# shared_pool: 32 slots
+# 3A.6 CONTRACT: Airflow pool slot counts MUST match the `tenants.*.slots` values
+# in the global_settings.yaml the DAG factory reads at parse time — the derived
+# max_active_runs logic depends on the config value equalling the real pool size.
+# So provision pools FROM that same file, do not hand-maintain a list here.
+#
+# The official chart has no native `pools:` value; provision via an init step
+# that reads global_settings.yaml and calls `airflow pools set`. Example:
+#
+# migrateDatabaseJob:            # or scheduler.extraInitContainers
+#   extraInitContainers:
+#     - name: provision-pools
+#       image: "{{ .Values.images.airflow.repository }}:{{ .Values.images.airflow.tag }}"
+#       command: ["/bin/bash","-c"]
+#       args:
+#         - |
+#           python - <<'PY'
+#           import yaml, subprocess
+#           g = yaml.safe_load(open("/opt/airflow/config/global_settings.yaml"))
+#           seen = {}
+#           for t, v in g.get("tenants", {}).items():
+#               seen[v["pool"]] = max(seen.get(v["pool"], 0), int(v["slots"]))
+#           for pool, slots in seen.items():
+#               subprocess.run(["airflow","pools","set",pool,str(slots),
+#                               f"tenant pool {pool} (3A.6 contract)"], check=True)
+#           PY
+#
+# The production global_settings.yaml (with the real operations/reporting/esg/
+# shared pools) ships via the same path decided in Task 3C.4.
 
 # ==============================================================================
 # LOGGING

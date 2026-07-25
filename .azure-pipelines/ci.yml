@@ -1,0 +1,167 @@
+# Azure DevOps CI for the ENGINE repository (this repo: rlam_airflow_framework +
+# Docker image). Runs the real test lanes and builds the image.
+#
+# NOTE: this is distinct from .azure-pipelines/config.yml, which is the
+# CONFIG-repo pipeline (validates pipeline YAMLs, tags prod-v*, publishes config
+# artifacts) and per Phase 3 Task 3C.4 belongs in the separate config repo.
+#
+# Lane separation (established 2026-07-23): the mocked lane installs airflow.*
+# mocks in sys.modules; the DAG lane needs REAL Airflow. They MUST run in
+# separate `pytest` invocations — tests/dag/conftest.py loudly skips the whole
+# DAG lane if it detects the unit mocks in-process.
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - 'upgrade/*'
+  paths:
+    exclude:
+      - 'config/data_sources/**'   # pipeline configs are the config repo's concern
+      - 'Documentation/**'
+      - '**/*.md'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  pythonVersion: '3.12'
+  # constraints.txt is the v3-3-test snapshot pinned in this repo
+  constraintsFile: 'constraints.txt'
+
+stages:
+  - stage: FastLanes
+    displayName: 'Mocked + DAG lanes (PR gate)'
+    jobs:
+      # ---- Mocked lane: unit + contract (fast; airflow.* is mocked) -----------
+      - job: MockedLane
+        displayName: 'Mocked lane (unit + contract)'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+          - task: Cache@2
+            displayName: 'Cache pip'
+            inputs:
+              key: 'pip | "$(Agent.OS)" | requirements.txt | $(constraintsFile)'
+              path: $(Pipeline.Workspace)/.pip-cache
+          - script: |
+              python -m pip install --upgrade pip
+              pip --cache-dir $(Pipeline.Workspace)/.pip-cache install \
+                  -r requirements.txt -c $(constraintsFile)
+              pip install -e .
+            displayName: 'Install deps + framework (editable)'
+          - script: pytest tests/unit tests/contract -q --junitxml=junit-mocked.xml
+            displayName: 'pytest tests/unit tests/contract'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: 'junit-mocked.xml'
+              testRunTitle: 'Mocked lane'
+
+      # ---- DAG lane: real Airflow, OWN invocation -----------------------------
+      - job: DagLane
+        displayName: 'DAG lane (real Airflow)'
+        pool:
+          vmImage: 'ubuntu-latest'   # Linux: DagBag/fcntl available, full lane runs
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+          - task: Cache@2
+            displayName: 'Cache pip'
+            inputs:
+              key: 'pip | "$(Agent.OS)" | requirements.txt | $(constraintsFile)'
+              path: $(Pipeline.Workspace)/.pip-cache
+          - script: |
+              python -m pip install --upgrade pip
+              pip --cache-dir $(Pipeline.Workspace)/.pip-cache install \
+                  -r requirements.txt -c $(constraintsFile)
+              pip install -e .
+            displayName: 'Install deps + framework (editable)'
+          - script: pytest tests/dag -q --junitxml=junit-dag.xml
+            displayName: 'pytest tests/dag  (separate invocation)'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: 'junit-dag.xml'
+              testRunTitle: 'DAG lane'
+
+  - stage: DockerLane
+    displayName: 'Docker integration + e2e (post-merge / nightly)'
+    # Heavier: brings the compose stack up. Not a PR gate by default; run on
+    # main/develop pushes. Flip to a PR gate once runner capacity is confirmed.
+    dependsOn: FastLanes
+    condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Schedule'))
+    jobs:
+      - job: Integration
+        displayName: 'Integration + e2e vs compose stack'
+        timeoutInMinutes: 40
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+          - script: |
+              set -euo pipefail
+              docker compose -f docker/docker-compose.yaml build
+              docker compose -f docker/docker-compose.yaml up -d
+            displayName: 'Build + start stack'
+          - script: |
+              set -euo pipefail
+              # wait for the apiserver to report healthy
+              for i in $(seq 1 60); do
+                if curl -sf http://localhost:8080/api/v2/version >/dev/null 2>&1 \
+                   || curl -s http://localhost:8080/api/v2/version | grep -q version; then
+                  echo "apiserver up"; break
+                fi
+                sleep 5
+              done
+            displayName: 'Wait for stack health'
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt -c $(constraintsFile)
+              pip install -e .
+              # the deadline notifiers now ship in the package — no plugins path needed
+              pytest tests/integration tests/e2e -q --junitxml=junit-integration.xml
+            displayName: 'pytest tests/integration tests/e2e'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: 'junit-integration.xml'
+              testRunTitle: 'Integration + e2e'
+          - script: docker compose -f docker/docker-compose.yaml logs --tail=200 || true
+            condition: failed()
+            displayName: 'Dump stack logs on failure'
+          - script: docker compose -f docker/docker-compose.yaml down -v || true
+            condition: always()
+            displayName: 'Tear down stack'
+
+  # ---- Image build/push: requires ACR creds (service connection) -------------
+  # TODO(acr): enable once the ACR service connection + 3.3.0 base mirror exist
+  # (see Task 3C.1). Gate on main. Build with --build-arg USE_ZSCALER_CERT per
+  # Task 3C.3 when building inside the ZScaler-inspected network.
+  # - stage: BuildImage
+  #   dependsOn: DockerLane
+  #   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  #   jobs:
+  #     - job: BuildPush
+  #       steps:
+  #         - task: Docker@2
+  #           inputs:
+  #             containerRegistry: '<acr-service-connection>'
+  #             repository: 'airflow'
+  #             command: 'buildAndPush'
+  #             Dockerfile: 'Dockerfile'
+  #             tags: |
+  #               3.3.0-$(Build.SourceVersion)
