@@ -82,6 +82,14 @@ RUN mkdir -p /opt/airflow/config/schemas \
 # COPY PRE-BUILT DEPENDENCIES FROM BUILDER
 COPY --from=builder /usr/lib/python${PYTHON_VERSION}/site-packages /usr/lib/python${PYTHON_VERSION}/site-packages
 
+# Chart-native entrypoint installed at BOTH the container ENTRYPOINT and the
+# path the official Helm chart hardcodes for its liveness/readiness probes
+# (`/entrypoint airflow jobs check ...`). The DHI base ships no /entrypoint, so
+# without this the chart's probes fail and SIGTERM every component. Works with
+# compose bare subcommands too (see docker/entrypoint.sh).
+COPY docker/entrypoint.sh /entrypoint
+RUN chmod 0755 /entrypoint
+
 USER airflow
 
 # PYTHONDONTWRITEBYTECODE=1: Disable bytecode generation at runtime (already pre-compiled)
@@ -96,4 +104,4 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD airflow db check || exit 1
 
-ENTRYPOINT ["airflow"]
+ENTRYPOINT ["/entrypoint"]
