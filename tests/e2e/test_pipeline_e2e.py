@@ -331,11 +331,14 @@ class TestDataQualityPipeline:
                 msg = consumer.poll(timeout=1.0)
                 if msg is None:
                     continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                msg_error = msg.error()
+                if msg_error:
+                    if msg_error.code() == KafkaError._PARTITION_EOF:
                         continue
                     break
-                messages.append(json.loads(msg.value().decode("utf-8")))
+                msg_value = msg.value()
+                assert msg_value is not None
+                messages.append(json.loads(msg_value.decode("utf-8")))
             # May be empty if no DQ checks have run
             assert isinstance(messages, list)
         finally:

@@ -1,4 +1,4 @@
-# File: dags/utils/health_checks.py
+# File: rlam_airflow_framework/health_checks.py
 """
 Health check utilities for pre-flight validation of external services.
 
@@ -12,27 +12,34 @@ since their connection IDs are determined per-pipeline configuration.
 """
 
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 import structlog
 
-try:
-    from airflow.sdk import task
-    from airflow.sdk import PokeReturnValue
-    AIRFLOW_AVAILABLE = True
-except ImportError:
-    # For testing without Airflow
-    task = None
-    PokeReturnValue = None
-    AIRFLOW_AVAILABLE = False
-
-try:
+if TYPE_CHECKING:
+    from airflow.sdk import task, PokeReturnValue
     from confluent_kafka import Producer
     from confluent_kafka.admin import AdminClient
+    AIRFLOW_AVAILABLE = True
     KAFKA_AVAILABLE = True
-except ImportError:
-    Producer = None
-    AdminClient = None
-    KAFKA_AVAILABLE = False
+else:
+    try:
+        from airflow.sdk import task
+        from airflow.sdk import PokeReturnValue
+        AIRFLOW_AVAILABLE = True
+    except ImportError:
+        # For testing without Airflow
+        task = None
+        PokeReturnValue = None
+        AIRFLOW_AVAILABLE = False
+
+    try:
+        from confluent_kafka import Producer
+        from confluent_kafka.admin import AdminClient
+        KAFKA_AVAILABLE = True
+    except ImportError:
+        Producer = None
+        AdminClient = None
+        KAFKA_AVAILABLE = False
 
 log = structlog.get_logger(__name__)
 
@@ -90,7 +97,7 @@ def check_kafka_health(
     
     try:
         # Use AdminClient for metadata request (lighter than Producer)
-        admin_config = {
+        admin_config: Dict[str, Any] = {
             "bootstrap.servers": servers,
             "socket.timeout.ms": timeout_ms,
             "request.timeout.ms": timeout_ms,

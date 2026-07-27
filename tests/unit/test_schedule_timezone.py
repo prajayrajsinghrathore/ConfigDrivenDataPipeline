@@ -9,8 +9,17 @@ Tests cover:
 - start_date and end_date parsing
 """
 
+from typing import cast
+
 import pytest
 import pendulum
+
+
+def _parse(date_str: str, tz: str) -> pendulum.DateTime:
+    """Typed wrapper: pendulum.parse() returns Date|Time|DateTime|Duration per
+    its stubs, but a date-only string with an explicit tz always yields a
+    DateTime at runtime."""
+    return cast(pendulum.DateTime, pendulum.parse(date_str, tz=tz))
 
 
 class TestPendulumDatetimeParsing:
@@ -31,7 +40,7 @@ class TestPendulumDatetimeParsing:
     def test_parse_datetime_with_various_timezones(self, timezone):
         """Parse date with different IANA timezones."""
         date_str = "2024-03-15"
-        result = pendulum.parse(date_str, tz=timezone)
+        result = _parse(date_str, tz=timezone)
         
         assert isinstance(result, pendulum.DateTime)
         assert result.timezone_name == timezone
@@ -44,7 +53,7 @@ class TestPendulumDatetimeParsing:
     
     def test_parse_datetime_preserves_timezone_info(self):
         """Parsed datetime should be timezone-aware, not naive."""
-        result = pendulum.parse("2024-01-01", tz="America/New_York")
+        result = _parse("2024-01-01", tz="America/New_York")
         
         # Pendulum DateTime objects are always timezone-aware
         assert result.timezone_name == "America/New_York"
@@ -52,7 +61,7 @@ class TestPendulumDatetimeParsing:
     
     def test_parse_datetime_utc(self):
         """Parse datetime with UTC timezone."""
-        result = pendulum.parse("2024-06-15", tz="UTC")
+        result = _parse("2024-06-15", tz="UTC")
         
         assert result.timezone_name == "UTC"
         assert result.offset_hours == 0
@@ -60,12 +69,12 @@ class TestPendulumDatetimeParsing:
     def test_invalid_timezone_raises_error(self):
         """Invalid timezone should raise error."""
         with pytest.raises(Exception):  # pendulum raises various exceptions
-            pendulum.parse("2024-01-01", tz="Invalid/Timezone")
+            _parse("2024-01-01", tz="Invalid/Timezone")
     
     def test_empty_date_string_raises_error(self):
         """Empty date string should raise error."""
         with pytest.raises(Exception):
-            pendulum.parse("", tz="UTC")
+            _parse("", tz="UTC")
 
 
 class TestStartDateEndDateParsing:
@@ -73,7 +82,7 @@ class TestStartDateEndDateParsing:
     
     def test_parse_start_date_only(self):
         """Parse start_date without end_date."""
-        start = pendulum.parse("2024-01-01", tz="UTC")
+        start = _parse("2024-01-01", tz="UTC")
         
         assert start.year == 2024
         assert start.month == 1
@@ -81,7 +90,7 @@ class TestStartDateEndDateParsing:
     
     def test_parse_end_date_only(self):
         """Parse end_date independently."""
-        end = pendulum.parse("2024-12-31", tz="UTC")
+        end = _parse("2024-12-31", tz="UTC")
         
         assert end.year == 2024
         assert end.month == 12
@@ -89,8 +98,8 @@ class TestStartDateEndDateParsing:
     
     def test_parse_start_and_end_date_with_same_timezone(self):
         """Parse both start_date and end_date with same timezone."""
-        start = pendulum.parse("2024-01-01", tz="America/New_York")
-        end = pendulum.parse("2024-12-31", tz="America/New_York")
+        start = _parse("2024-01-01", tz="America/New_York")
+        end = _parse("2024-12-31", tz="America/New_York")
         
         assert start.timezone_name == end.timezone_name
         assert start < end
@@ -101,16 +110,16 @@ class TestTimezoneAwareDatetimeComparison:
     
     def test_compare_utc_datetimes(self):
         """Compare two UTC datetimes."""
-        dt1 = pendulum.parse("2024-01-01", tz="UTC")
-        dt2 = pendulum.parse("2024-06-01", tz="UTC")
+        dt1 = _parse("2024-01-01", tz="UTC")
+        dt2 = _parse("2024-06-01", tz="UTC")
         
         assert dt1 < dt2
     
     def test_compare_different_timezone_datetimes(self):
         """Compare datetimes in different timezones (should convert correctly)."""
         # Both represent same moment in time (midnight Jan 1, 2024 in each timezone)
-        utc_dt = pendulum.parse("2024-01-01", tz="UTC")
-        ny_dt = pendulum.parse("2024-01-01", tz="America/New_York")
+        utc_dt = _parse("2024-01-01", tz="UTC")
+        ny_dt = _parse("2024-01-01", tz="America/New_York")
         
         # NY midnight is 5 hours ahead of UTC midnight (during EST)
         # So NY midnight comes AFTER UTC midnight
@@ -122,7 +131,7 @@ class TestEdgeCases:
     
     def test_leap_year_date(self):
         """Parse February 29 in leap year."""
-        result = pendulum.parse("2024-02-29", tz="UTC")
+        result = _parse("2024-02-29", tz="UTC")
         
         assert result.year == 2024
         assert result.month == 2
@@ -131,17 +140,17 @@ class TestEdgeCases:
     def test_invalid_leap_year_date_raises_error(self):
         """February 29 in non-leap year should raise error."""
         with pytest.raises(Exception):
-            pendulum.parse("2023-02-29", tz="UTC")  # 2023 is not a leap year
+            _parse("2023-02-29", tz="UTC")  # 2023 is not a leap year
     
     def test_year_2000_date(self):
         """Parse dates from year 2000."""
-        result = pendulum.parse("2000-01-01", tz="UTC")
+        result = _parse("2000-01-01", tz="UTC")
         
         assert result.year == 2000
     
     def test_future_date(self):
         """Parse future dates."""
-        result = pendulum.parse("2030-12-31", tz="UTC")
+        result = _parse("2030-12-31", tz="UTC")
         
         assert result.year == 2030
         assert result.month == 12

@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -41,13 +42,14 @@ class _StubBaseNotifier:
 @pytest.fixture(scope="module")
 def dc():
     """deadline_callbacks loaded with a real (stub) BaseNotifier base class."""
-    sdk_mock = sys.modules["airflow.sdk"]
+    sdk_mock = cast(Any, sys.modules["airflow.sdk"])
     original_base = sdk_mock.BaseNotifier
     sdk_mock.BaseNotifier = _StubBaseNotifier
     try:
         spec = importlib.util.spec_from_file_location(
             "deadline_callbacks_real", MODULE_PATH
         )
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         yield module

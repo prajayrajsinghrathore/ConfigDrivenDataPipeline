@@ -15,7 +15,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def register_integration_tenant(monkeypatch):
     """Inject the `shared_services` tenant into global settings (see unit conftest)."""
-    from rlam_airflow_framework.config_loader import ConfigLoader
+    from rlam_airflow_framework.config import ConfigLoader
 
     original_load_global = ConfigLoader.load_global_settings
 

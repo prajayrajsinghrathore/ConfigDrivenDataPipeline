@@ -1,4 +1,4 @@
-# File: dags/utils/tenant_context.py
+# File: rlam_airflow_framework/tenant_context.py
 """
 Multi-tenancy context management for ConfigDrivenDataPipeline.
 
@@ -207,7 +207,11 @@ class TenantContext:
                 return conn_id
 
         # Priority 3 & 4: Environment variable or hardcoded default
-        conn_id = self.DEFAULT_CONNECTIONS.get(conn_type, "default_connection")
+        conn_id = (
+            self.DEFAULT_CONNECTIONS.get(conn_type, "default_connection")
+            if conn_type
+            else "default_connection"
+        )
         log.debug(
             "Using default connection",
             connection_id=conn_id,

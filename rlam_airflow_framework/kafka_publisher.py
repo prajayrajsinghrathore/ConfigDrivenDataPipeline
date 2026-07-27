@@ -18,14 +18,11 @@ import json
 import structlog
 import threading
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 from confluent_kafka import Producer, KafkaException
 import os
 import time
 from enum import Enum
-
-if TYPE_CHECKING:
-    from rlam_airflow_framework.tenant_context import TenantContext
 
 log = structlog.get_logger(__name__)
 
@@ -42,10 +39,13 @@ KAFKA_MESSAGE_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_MESSAGE", "10")) * 1000 
 KAFKA_CIRCUIT_RECOVERY_TIMEOUT = float(os.getenv("TIMEOUT_KAFKA_CIRCUIT_RECOVERY", os.getenv("KAFKA_CIRCUIT_RECOVERY_TIMEOUT", "30.0")))
 
 # Import tenant context for multi-tenancy support
-try:
+if TYPE_CHECKING:
     from rlam_airflow_framework.tenant_context import TenantContext
-except ImportError:
-    TenantContext = None
+else:
+    try:
+        from rlam_airflow_framework.tenant_context import TenantContext
+    except ImportError:
+        TenantContext = None
 
 
 class CircuitState(Enum):
@@ -171,7 +171,7 @@ class KafkaEventPublisher:
         )
 
         # Metrics
-        self._metrics = {
+        self._metrics: Dict[str, Any] = {
             "messages_sent": 0,
             "messages_failed": 0,
             "last_success_time": None,
@@ -537,7 +537,7 @@ class KafkaEventPublisher:
         event_type: str,
         status: str,
         message: str,
-        execution_date: str,
+        execution_date: Union[str, datetime],
         topic: str,
         metadata: Optional[Dict[str, Any]] = None,
         tenant_id: Optional[str] = None,
@@ -654,7 +654,7 @@ class KafkaEventPublisher:
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "execution_date": execution_date.isoformat()
-                if hasattr(execution_date, "isoformat")
+                if isinstance(execution_date, datetime)
                 else str(execution_date)
                 if execution_date
                 else None,

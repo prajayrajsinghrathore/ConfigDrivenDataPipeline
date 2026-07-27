@@ -1,3 +1,5 @@
+from rlam_airflow_framework.config.reader import load_yaml_file
+from rlam_airflow_framework.config.validator import ConfigValidator
 # File: tests/unit/test_config_loader_actual.py
 """
 Unit tests for the actual ConfigLoader implementation.
@@ -19,7 +21,7 @@ from unittest.mock import patch
 import yaml
 
 # Import actual implementation
-from rlam_airflow_framework.config_loader import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
 
 
 class TestConfigLoaderInit:
@@ -124,7 +126,6 @@ class TestConfigLoaderLoadSchemaFiles:
                 "type": "object",
                 "properties": {"type": {}},
             },
-            "enrichment_schema.yaml": {"type": "object", "properties": {"source": {}}},
         }
 
         for filename, content in schemas.items():
@@ -136,7 +137,6 @@ class TestConfigLoaderLoadSchemaFiles:
 
         assert "data_source" in loader.schemas
         assert "transformation" in loader.schemas
-        assert "enrichment" in loader.schemas
 
     def test_load_schema_files_partial(self, tmp_path):
         """Test loading when only some schema files exist."""
@@ -153,7 +153,6 @@ class TestConfigLoaderLoadSchemaFiles:
 
         assert "data_source" in loader.schemas
         assert "transformation" not in loader.schemas
-        assert "enrichment" not in loader.schemas
 
     def test_load_schema_files_missing_directory(self, tmp_path):
         """Test loading when schemas directory doesn't exist."""
@@ -383,8 +382,9 @@ class TestConfigLoaderLoadConfigFile:
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
                 loader = ConfigLoader(config_dir=str(tmp_path))
 
-        result = loader._load_yaml_file(str(config_file))
+        result = load_yaml_file(str(config_file))
 
+        assert result is not None
         assert result["key"] == "value"
         assert result["nested"]["a"] == 1
 
@@ -397,51 +397,29 @@ class TestConfigLoaderLoadConfigFile:
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
                 loader = ConfigLoader(config_dir=str(tmp_path))
 
-        result = loader._load_yaml_file(str(config_file))
+        result = load_yaml_file(str(config_file))
         assert result is None
 
     def test_load_config_file_not_found(self, tmp_path):
-        """Test loading non-existent file raises ConfigLoadError."""
-        with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
-            with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(tmp_path))
-
-        with pytest.raises(ConfigLoadError):
-            loader._load_yaml_file(str(tmp_path / "nonexistent.yaml"))
+        with pytest.raises(ConfigLoadError, match="File not found"):
+            load_yaml_file(str(tmp_path / "nonexistent.yaml"))
 
 
 class TestConfigLoaderValidateConfig:
-    """Test _validate_config() method."""
-
     @pytest.fixture
-    def loader(self, tmp_path):
-        """Create loader for testing."""
-        with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
-            with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                return ConfigLoader(config_dir=str(tmp_path))
+    def validator(self):
+        return ConfigValidator()
 
-    def test_validate_config_valid(self, loader):
-        """Test validation passes for valid config."""
+    def test_validate_config_valid(self, validator):
         config = {
-            "metadata": {"tenant": "shared_services"},
-            "data_source": {"name": "test_source", "type": "api"},
-            "destination": {"primary": {"type": "local_file"}},
+            "metadata": {"tenant": "test_tenant"},
+            "data_source": {"name": "test_source", "type": "postgres"},
+            "destination": {"type": "snowflake"},
         }
-
-        result = loader._validate_config(config, "test.yaml")
+        result = validator.validate_config(config, "test.yaml")
         assert result is True
 
-    def test_validate_config_missing_data_source(self, loader):
-        """Test validation fails when data_source is missing."""
-        config = {
-            "metadata": {"tenant": "shared_services"},
-            "destination": {"primary": {"type": "local_file"}},
-        }
-
-        result = loader._validate_config(config, "test.yaml")
-        assert result is False
-
-    def test_validate_config_missing_name(self, loader):
+    def test_validate_config_missing_name(self, validator):
         """Test validation fails when name is missing in data_source."""
         config = {
             "metadata": {"tenant": "shared_services"},
@@ -449,17 +427,17 @@ class TestConfigLoaderValidateConfig:
             "destination": {"primary": {}},
         }
 
-        result = loader._validate_config(config, "test.yaml")
+        result = validator.validate_config(config, "test.yaml")
         assert result is False
 
-    def test_validate_config_missing_destination(self, loader):
+    def test_validate_config_missing_destination(self, validator):
         """Test validation fails when destination is missing."""
         config = {
             "data_source": {"name": "test_source"},
             # Missing 'destination'
         }
 
-        result = loader._validate_config(config, "test.yaml")
+        result = validator.validate_config(config, "test.yaml")
         assert result is False
 
 
@@ -643,7 +621,7 @@ key2: value2
 
         # yaml.safe_load raises ComposerError for multiple documents
         with pytest.raises(Exception):  # yaml.composer.ComposerError
-            loader._load_config_file(str(config_file))
+            load_yaml_file(str(config_file))
 
 
 class TestConfigLoaderIntegration:

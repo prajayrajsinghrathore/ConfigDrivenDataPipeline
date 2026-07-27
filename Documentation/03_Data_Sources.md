@@ -13,6 +13,7 @@
 - [SFTP Sources](#sftp-sources)
   - [Basic Configuration](#basic-configuration-1)
   - [Authentication](#authentication)
+  - [Host Key Verification (SSH) — Onboarding a New SFTP Host](#host-key-verification-ssh--onboarding-a-new-sftp-host)
   - [File Processing Modes](#file-processing-modes)
   - [File Patterns](#file-patterns)
 - [Connection Management](#connection-management)
@@ -455,6 +456,89 @@ airflow connections add sftp_dev \
   --port 22
 ```
 
+### Host Key Verification (SSH) — Onboarding a New SFTP Host
+
+Before the first SFTP pull from any new host, its SSH host key must be trusted.
+The framework verifies the server's host key on every connection to prevent
+man-in-the-middle attacks (an attacker who spoofs the host would otherwise
+receive the connection's credentials and feed back malicious data).
+
+> ⚠️ **The default mode is `strict`.** A host whose key is not already known is
+> **rejected** and the task fails with an `SSHException` — it does **not** connect.
+> This is deliberate: a new SFTP host will not work until you complete the
+> onboarding steps below. There is no "just connect anyway" default.
+
+#### Verification modes
+
+Set via the `SSH_HOST_KEY_MODE` environment variable on the worker/scheduler:
+
+| Mode | Behavior | Use for |
+|------|----------|---------|
+| `strict` *(default)* | Unknown host key → **reject and fail**. Only keys present in `known_hosts` are trusted. | **Production** (and any shared environment) |
+| `warn` | Unknown host key → log a warning and **connect anyway**. | Local/dev experiments only |
+| `auto_add` | Unknown host key → add it to `known_hosts` and connect (trust-on-first-use). | One-off local bootstrapping only — **never production** |
+
+The `known_hosts` file location is controlled by `SSH_KNOWN_HOSTS_FILE`
+(default: `~/.ssh/known_hosts`). System host keys are also loaded automatically.
+
+#### Onboarding steps (per new SFTP host)
+
+**1. Capture the host key** and, critically, **verify its fingerprint out of band**
+(from the SFTP provider's documentation or a support ticket — do not trust the
+key just because `ssh-keyscan` returned it):
+
+```bash
+# Fetch the host's public keys
+ssh-keyscan -p 22 sftp.example.com > sftp.example.com.knownhosts
+
+# Print fingerprints and compare against the value the provider gave you
+ssh-keygen -lf sftp.example.com.knownhosts
+```
+
+**2. Add the verified key to the framework's `known_hosts`.** Choose the delivery
+mechanism that matches how you run Airflow:
+
+- **Kubernetes / AKS (production):** mount the entries via a `Secret`/`ConfigMap`
+  onto the worker and scheduler pods, and point `SSH_KNOWN_HOSTS_FILE` at the
+  mount path. Add these to the Helm values so every new host is version-controlled:
+
+  ```yaml
+  # helm values (illustrative)
+  env:
+    - name: SSH_HOST_KEY_MODE
+      value: "strict"
+    - name: SSH_KNOWN_HOSTS_FILE
+      value: "/etc/ssh-known-hosts/known_hosts"
+  # ...with the file provided by a mounted Secret containing the verified keys
+  ```
+
+- **Docker image bake (also fine for prod):** append the verified entries to the
+  image's `known_hosts` during build so they ship with the deployment.
+
+- **Local Docker / dev:** append to your `~/.ssh/known_hosts`:
+
+  ```bash
+  cat sftp.example.com.knownhosts >> ~/.ssh/known_hosts
+  ```
+
+**3. Deploy, then run the pipeline.** With the key present, `strict` mode connects
+normally. If you skipped a host, the task fails fast with:
+`Unknown host key for <host>. Add to known_hosts or set SSH_HOST_KEY_MODE=warn` —
+that means step 1–2 were not completed for that host.
+
+#### Rotating / changing a host key
+
+If the SFTP provider rotates their host key, connections will start failing under
+`strict` (the presented key no longer matches the stored one). Re-run step 1 to
+capture and **re-verify** the new key, replace the old entry in `known_hosts`, and
+redeploy. Never work around a key-mismatch failure by switching to `warn` in
+production — a mismatch is exactly the signal `strict` exists to catch.
+
+> **Dev shortcut:** for throwaway local testing you can set
+> `SSH_HOST_KEY_MODE=auto_add` to trust-on-first-use, or `warn` to bypass
+> verification entirely. Neither is acceptable in any shared or production
+> environment.
+
 ### File Processing Modes
 
 #### Single File Mode
@@ -628,10 +712,20 @@ REST API requests automatically retry on transient errors:
 data_source:
   type: rest_api
   endpoint: https://api.example.com/data
-  timeout: 30
-  max_retries: 3
-  retry_backoff: 1.0  # Exponential backoff factor
+  timeout: 30       # Optional: per-source override of the request timeout (seconds)
+  max_retries: 3    # Optional: per-source override of the retry count
 ```
+
+`timeout` and `max_retries` are read from the `data_source` config by
+`HttpFetcher` (`rlam_airflow_framework/data_fetchers/http.py`). When omitted,
+they fall back to the `TIMEOUT_HTTP_REQUEST` / `TIMEOUT_HTTP_MAX_RETRIES`
+environment variables (see [Centralized Timeout Configuration](#error-handling-and-retries)),
+which in turn default to 30s / 3 retries.
+
+> The backoff factor between retries is **not** currently a per-source config
+> key — it's controlled only via the `TIMEOUT_HTTP_RETRY_BACKOFF` environment
+> variable (default `1.0`). A `retry_backoff:` key under `data_source` has no
+> effect today.
 
 **Retry Strategy:**
 
@@ -662,12 +756,27 @@ flowchart TD
 ```yaml
 data_source:
   type: sftp
-  sftp_config:
-    connect_timeout: 30
-    banner_timeout: 30
-    auth_timeout: 30
-    channel_timeout: 30
+  timeout: 30  # Optional: per-source override, applied to connect/banner/auth/channel
 ```
+
+`timeout` is read from the `data_source` config by `SftpFetcher`
+(`rlam_airflow_framework/data_fetchers/sftp.py`). When set, it overrides the
+connect, banner, and auth timeouts *and* the SFTP channel timeout uniformly.
+
+When `timeout` is **not** set in the config, each phase falls back to its own
+environment variable instead of a single shared default:
+
+| Phase | Env var | Default |
+|-------|---------|---------|
+| SSH connect | `TIMEOUT_SFTP_CONNECT` | 30s |
+| SSH banner | `TIMEOUT_SFTP_BANNER` | 30s |
+| SSH auth | `TIMEOUT_SFTP_AUTH` | 30s |
+| SFTP channel | `TIMEOUT_SFTP_CHANNEL` | 30s |
+
+> There is currently no per-source way to set connect/banner/auth/channel
+> timeouts *independently* from pipeline config — only the single `timeout`
+> key (applied to all four) or the four environment variables above. A
+> nested `sftp_config:` block has no effect today.
 
 ---
 

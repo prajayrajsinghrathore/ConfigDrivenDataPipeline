@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
 def test_hitl_enabled_does_not_raise():
@@ -44,7 +46,7 @@ def test_hitl_enabled_does_not_raise():
     assert dag.dag_id == "test_test_src"
     
     # Verify rerun_with_latest_version
-    assert dag.partial_kwargs.get("rerun_with_latest_version") is True
+    assert cast(Any, dag).partial_kwargs.get("rerun_with_latest_version") is True
     
     # Verify retry policy in default_args
     assert "retry_policy" in dag.default_args
@@ -72,7 +74,7 @@ def test_partitioned_dag_creation_uses_pool_slots():
     
     dag = factory.create_dag_from_config(config_dict)
     assert dag is not None
-    assert dag.partial_kwargs.get("max_active_runs") == 5
+    assert cast(Any, dag).partial_kwargs.get("max_active_runs") == 5
 
 def test_partitioned_dag_creation_explicit_runs():
     factory = DAGFactoryV2()
@@ -97,7 +99,7 @@ def test_partitioned_dag_creation_explicit_runs():
     
     dag = factory.create_dag_from_config(config_dict)
     assert dag is not None
-    assert dag.partial_kwargs.get("max_active_runs") == 3
+    assert cast(Any, dag).partial_kwargs.get("max_active_runs") == 3
 
 def test_partitioned_dag_rejects_incremental():
     factory = DAGFactoryV2()
@@ -144,4 +146,4 @@ def test_non_partitioned_dag_max_active_runs_is_always_1():
     
     dag = factory.create_dag_from_config(config_dict)
     assert dag is not None
-    assert dag.partial_kwargs.get("max_active_runs") == 1
+    assert cast(Any, dag).partial_kwargs.get("max_active_runs") == 1

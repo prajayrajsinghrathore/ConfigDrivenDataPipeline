@@ -12,8 +12,8 @@ Mocks provided:
 - airflow.callbacks, airflow.task, airflow.utils (for module loading)
 """
 
-import os
 import sys
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 # (plugins/ folder removed 2026-07-23 — deadline_callbacks now lives in the framework package)
@@ -40,21 +40,27 @@ def mock_dag_decorator(*args, **kwargs):
 airflow_mock.sdk.dag = mock_dag_decorator
 airflow_mock.sdk.DAG = MagicMock()
 
-# Make @task decorator a pass-through function
-def mock_task_decorator(func=None, **kwargs):
-    """Mock @task decorator that returns function unchanged."""
-    if func is None:
-        # Decorator called with arguments: @task.sensor(poke_interval=60)
-        def wrapper(f):
-            return f
-        return wrapper
-    # Decorator called without arguments: @task
-    return func
+class _MockTaskDecorator:
+    """Mock ``@task`` decorator that returns the function unchanged.
 
-# Add attributes to mock_task_decorator for @task.branch, @task.sensor, etc.
-mock_task_decorator.branch = mock_task_decorator
-mock_task_decorator.sensor = mock_task_decorator
-mock_task_decorator.python = mock_task_decorator
+    Supports ``@task``, ``@task(...)``, ``@task.branch``, ``@task.sensor``,
+    ``@task.python``, and any future sub-decorator via ``__getattr__``.
+    """
+
+    def __call__(self, func=None, **kwargs):
+        if func is None:
+            # Called with arguments: @task(retries=3) or @task.branch(do_xcom_push=False)
+            def wrapper(f):
+                return f
+            return wrapper
+        # Called without arguments: @task
+        return func
+
+    def __getattr__(self, _name: str) -> "_MockTaskDecorator":
+        # @task.branch, @task.sensor, @task.python all behave identically
+        return self
+
+mock_task_decorator = _MockTaskDecorator()
 
 airflow_mock.sdk.task = mock_task_decorator
 airflow_mock.sdk.get_current_context = MagicMock()
@@ -134,11 +140,12 @@ airflow_mock.utils.module_loading.qualname = mock_qualname
 # Register all mocks in sys.modules
 sys.modules["airflow"] = airflow_mock
 sys.modules["airflow.sdk"] = airflow_mock.sdk
-sys.modules["airflow.sdk.dag"] = airflow_mock.sdk.dag
+sys.modules["airflow.sdk.dag"] = cast(Any, airflow_mock.sdk.dag)
 sys.modules["airflow.sdk.definitions"] = airflow_mock.sdk.definitions
 sys.modules["airflow.sdk.definitions.asset"] = airflow_mock.sdk.definitions.asset
 sys.modules["airflow.sdk.definitions.deadline"] = airflow_mock.sdk.definitions.deadline
 sys.modules["airflow.sdk.definitions.callback"] = airflow_mock.sdk.definitions.callback
+sys.modules["airflow.sdk.definitions.context"] = airflow_mock.sdk.definitions.context
 sys.modules["airflow.sdk.definitions.retry_policy"] = airflow_mock.sdk.definitions.retry_policy
 sys.modules["airflow.decorators"] = airflow_mock.decorators
 sys.modules["airflow.operators"] = airflow_mock.operators
@@ -166,7 +173,7 @@ import pytest  # noqa: E402 - must import after airflow modules are mocked above
 
 @pytest.fixture(autouse=True)
 def mock_config_loader(monkeypatch):
-    from rlam_airflow_framework.config_loader import ConfigLoader
+    from rlam_airflow_framework.config import ConfigLoader
     
     original_load_global = ConfigLoader.load_global_settings
     

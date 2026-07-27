@@ -14,7 +14,8 @@ import threading
 
 try:
     from confluent_kafka import Producer, Consumer
-    from confluent_kafka.admin import AdminClient, NewTopic
+    from confluent_kafka.admin import AdminClient
+    from confluent_kafka.cimpl import NewTopic
 
     HAS_CONFLUENT_KAFKA = True
 except ImportError:
@@ -165,8 +166,10 @@ class TestKafkaProducerConsumer:
         assert callback_fired, "Delivery callback was not invoked - Kafka may be unavailable"
         assert "error" not in delivery_result, f"Delivery error: {delivery_result.get('error')}"
         assert delivery_result.get("topic") == test_topic
-        assert delivery_result.get("partition") >= 0
-        assert delivery_result.get("offset") >= 0
+        partition = delivery_result.get("partition")
+        offset = delivery_result.get("offset")
+        assert partition is not None and partition >= 0
+        assert offset is not None and offset >= 0
 
     def test_produce_and_consume_message(self, producer, consumer, test_topic):
         """Test full produce/consume cycle."""

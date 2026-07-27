@@ -10,6 +10,8 @@ Tests cover:
 - Response format handling
 """
 
+from typing import Any, cast
+
 import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
@@ -72,10 +74,10 @@ class TestIngestDataRestApi:
     """Test ingest_data function with REST API source."""
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_ingest_rest_api_success(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         """Test successful REST API data ingestion."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -83,7 +85,8 @@ class TestIngestDataRestApi:
         # Setup mocks
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
-        mock_fetch_http.return_value = test_data
+        mock_fetcher = mock_get_fetcher.return_value
+        mock_fetcher.fetch.return_value = test_data
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -92,27 +95,29 @@ class TestIngestDataRestApi:
         assert isinstance(result, str)
         assert result.endswith(".parquet")
         assert Path(result).exists()
-        
+
         # Load and verify the saved DataFrame
         saved_df = pd.read_parquet(result)
         assert len(saved_df) == 3
         assert list(saved_df.columns) == ["id", "value"]
 
-        # Verify fetch_http_data was called with correct parameters
-        mock_fetch_http.assert_called_once()
-        call_args = mock_fetch_http.call_args
-        assert call_args.kwargs["url"] == "https://api.example.com/data"
-        assert call_args.kwargs["format"] == "json"
+        # Verify the factory resolved "rest_api" and the fetcher was invoked
+        # with the data_source config and a correlation_id
+        mock_get_fetcher.assert_called_once_with("rest_api")
+        mock_fetcher.fetch.assert_called_once()
+        call_args = mock_fetcher.fetch.call_args
+        assert call_args.args[0]["endpoint"] == "https://api.example.com/data"
+        assert call_args.args[0]["response_format"] == "json"
         assert "correlation_id" in call_args.kwargs
 
         # Verify Kafka events were published
         assert mock_kafka.publish_pipeline_event.call_count == 2  # start and success
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_ingest_rest_api_with_csv_format(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         """Test REST API ingestion with CSV format."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -123,7 +128,8 @@ class TestIngestDataRestApi:
         # Setup mocks
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-        mock_fetch_http.return_value = test_data
+        mock_fetcher = mock_get_fetcher.return_value
+        mock_fetcher.fetch.return_value = test_data
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -132,16 +138,16 @@ class TestIngestDataRestApi:
         assert isinstance(result, str)
         assert result.endswith(".parquet")
         assert Path(result).exists()
-        
-        # Verify format parameter
-        call_args = mock_fetch_http.call_args
-        assert call_args.kwargs["format"] == "csv"
+
+        # Verify format parameter was carried through in the source config
+        call_args = mock_fetcher.fetch.call_args
+        assert call_args.args[0]["response_format"] == "csv"
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_ingest_rest_api_default_format(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         """Test REST API ingestion defaults to json when format not specified."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -152,7 +158,8 @@ class TestIngestDataRestApi:
         # Setup mocks
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"data": [1, 2, 3]})
-        mock_fetch_http.return_value = test_data
+        mock_fetcher = mock_get_fetcher.return_value
+        mock_fetcher.fetch.return_value = test_data
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -161,23 +168,24 @@ class TestIngestDataRestApi:
         assert isinstance(result, str)
         assert result.endswith(".parquet")
         assert Path(result).exists()
-        
-        # Verify default format is json
-        call_args = mock_fetch_http.call_args
-        assert call_args.kwargs["format"] == "json"
+
+        # response_format is absent from the source config passed to the
+        # fetcher; HttpFetcher.fetch() defaults it to "json" internally
+        call_args = mock_fetcher.fetch.call_args
+        assert call_args.args[0].get("response_format", "json") == "json"
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_ingest_rest_api_empty_dataframe(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         """Test handling of empty DataFrame from REST API."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        mock_fetch_http.return_value = pd.DataFrame()
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame()
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -186,7 +194,7 @@ class TestIngestDataRestApi:
         assert isinstance(result, str)
         assert result.endswith(".parquet")
         assert Path(result).exists()
-        
+
         # Load and verify the saved DataFrame is empty
         saved_df = pd.read_parquet(result)
         assert len(saved_df) == 0
@@ -199,10 +207,10 @@ class TestIngestDataSftp:
     """Test ingest_data function with SFTP source."""
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_sftp_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_ingest_sftp_success(
-        self, mock_kafka, mock_fetch_sftp, mock_context, sftp_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, sftp_config, mock_airflow_context, mock_temp_dir
     ):
         """Test successful SFTP data ingestion."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -210,7 +218,8 @@ class TestIngestDataSftp:
         # Setup mocks
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"name": ["Alice", "Bob"], "age": [25, 30]})
-        mock_fetch_sftp.return_value = test_data
+        mock_fetcher = mock_get_fetcher.return_value
+        mock_fetcher.fetch.return_value = test_data
 
         # Execute
         result = ingest_data(sftp_config)
@@ -219,13 +228,14 @@ class TestIngestDataSftp:
         assert isinstance(result, str)
         assert result.endswith(".parquet")
         assert Path(result).exists()
-        
+
         # Load and verify the saved DataFrame
         saved_df = pd.read_parquet(result)
         assert len(saved_df) == 2
-        
-        # Verify fetch_sftp_data was called
-        mock_fetch_sftp.assert_called_once()
+
+        # Verify the factory resolved "sftp" and the fetcher was invoked
+        mock_get_fetcher.assert_called_once_with("sftp")
+        mock_fetcher.fetch.assert_called_once()
 
 
 class TestIncrementalWatermarkFiltering:
@@ -235,10 +245,10 @@ class TestIncrementalWatermarkFiltering:
     watermark. Numeric comparison must win and the column must not be mutated."""
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_integer_watermark_filters_numerically_without_mutation(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         import sys
 
@@ -251,11 +261,11 @@ class TestIncrementalWatermarkFiltering:
         }
 
         mock_context.return_value = mock_airflow_context
-        mock_fetch_http.return_value = pd.DataFrame(
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
             {"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"]}
         )
 
-        sdk_mock = sys.modules["airflow.sdk"]
+        sdk_mock = cast(Any, sys.modules["airflow.sdk"])
         original_variable = sdk_mock.Variable
         sdk_mock.Variable = MagicMock()
         # Stored watermark "3" -> only ids 4 and 5 should survive
@@ -265,7 +275,7 @@ class TestIncrementalWatermarkFiltering:
         finally:
             sdk_mock.Variable = original_variable
 
-        saved_df = pd.read_parquet(result)
+        saved_df = pd.read_parquet(cast(str, result))
         assert list(saved_df["id"]) == [4, 5]
         # The column must remain integer — NOT coerced to datetime
         assert pd.api.types.is_integer_dtype(saved_df["id"]), saved_df["id"].dtype
@@ -293,17 +303,17 @@ class TestIngestDataErrorHandling:
             ingest_data(rest_api_config)
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_fetch_failure_publishes_error_event(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context
     ):
         """Test that fetch failures publish error events to Kafka."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        mock_fetch_http.side_effect = Exception("Network error")
+        mock_get_fetcher.return_value.fetch.side_effect = Exception("Network error")
 
         # Execute and verify exception is raised
         with pytest.raises(Exception, match="Network error"):
@@ -339,10 +349,10 @@ class TestConfigValidation:
     """Test configuration validation and parameter extraction."""
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_url_extraction_from_config(
-        self, mock_kafka, mock_fetch_http, mock_context, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, mock_airflow_context, mock_temp_dir
     ):
         """Test that URL is correctly extracted from endpoint field."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -357,30 +367,30 @@ class TestConfigValidation:
         }
 
         mock_context.return_value = mock_airflow_context
-        mock_fetch_http.return_value = pd.DataFrame({"test": [1]})
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame({"test": [1]})
 
         ingest_data(config)
 
-        # Verify URL parameter
-        call_args = mock_fetch_http.call_args
-        assert call_args.kwargs["url"] == "https://example.com/api/v1/data"
+        # Verify URL (endpoint) was passed through in the source config
+        call_args = mock_get_fetcher.return_value.fetch.call_args
+        assert call_args.args[0]["endpoint"] == "https://example.com/api/v1/data"
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_correlation_id_generation(
-        self, mock_kafka, mock_fetch_http, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
     ):
         """Test that correlation_id is properly generated and passed."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         mock_context.return_value = mock_airflow_context
-        mock_fetch_http.return_value = pd.DataFrame({"data": [1]})
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame({"data": [1]})
 
         ingest_data(rest_api_config)
 
         # Verify correlation_id is generated and passed
-        call_args = mock_fetch_http.call_args
+        call_args = mock_get_fetcher.return_value.fetch.call_args
         correlation_id = call_args.kwargs["correlation_id"]
         assert correlation_id is not None
         assert "test_dag" in correlation_id
@@ -413,18 +423,18 @@ class TestConfigValidation:
             }
         }
         
-        with patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data") as mock_fetch:
+        with patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher") as mock_get_fetcher:
             import pandas as pd
             df = pd.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
-            mock_fetch.return_value = df
-            
+            mock_get_fetcher.return_value.fetch.return_value = df
+
             from rlam_airflow_framework.taskflow_tasks import ingest_data
             ingest_data(config)
-            
+
             # The watermark from the Variable should be used
-            mock_fetch.assert_called_once()
-            called_url = mock_fetch.call_args.kwargs.get("url")
-            assert "2024-01-05T00:00:00" in called_url
+            mock_get_fetcher.return_value.fetch.assert_called_once()
+            called_config = mock_get_fetcher.return_value.fetch.call_args.args[0]
+            assert "2024-01-05T00:00:00" in called_config["endpoint"]
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("airflow.sdk.Variable")
@@ -461,8 +471,8 @@ class TestConfigValidation:
             }
         }
         
-        res = load_data(df_path, config)
-        
+        res = cast(str, load_data(df_path, config))
+
         assert "Primary: Printed 2 rows to logs" in res
         
         # Verify watermark was updated
@@ -551,10 +561,10 @@ class TestWatermarkSafetyAndPartitionEvents:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("airflow.sdk.Variable")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_non_strict_missing_watermark_full_loads_from_initial(
-        self, mock_kafka, mock_fetch, mock_variable, mock_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_variable, mock_context, mock_temp_dir
     ):
         """3A.4: non-strict missing watermark falls back to a full load from initial_watermark."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -565,7 +575,9 @@ class TestWatermarkSafetyAndPartitionEvents:
             "run_id": "test_run_123",
         }
         mock_variable.get.return_value = None
-        mock_fetch.return_value = pd.DataFrame({"id": [1, 2], "v": ["a", "b"]})
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
+            {"id": [1, 2], "v": ["a", "b"]}
+        )
 
         config = {
             "data_source": {
@@ -580,16 +592,17 @@ class TestWatermarkSafetyAndPartitionEvents:
             },
         }
 
-        result = ingest_data(config)
+        result = cast(str, ingest_data(config))
         assert result.endswith(".parquet")
         # Fetch used the initial watermark in the templated URL
-        assert mock_fetch.call_args.kwargs["url"] == "https://x/api?since=0"
+        call_args = mock_get_fetcher.return_value.fetch.call_args
+        assert call_args.args[0]["endpoint"] == "https://x/api?since=0"
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.fetch_http_data")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
     @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
     def test_partition_key_threaded_into_kafka_event_metadata(
-        self, mock_kafka, mock_fetch, mock_context, mock_temp_dir
+        self, mock_kafka, mock_get_fetcher, mock_context, mock_temp_dir
     ):
         """2A.4.2: partitioned ingest events must carry partition_key in metadata
         (verified live 2026-07-23; this locks the contract)."""
@@ -602,7 +615,9 @@ class TestWatermarkSafetyAndPartitionEvents:
             "partition_key": "2026-07-22",
             "partition_date": None,
         }
-        mock_fetch.return_value = pd.DataFrame({"id": [1], "event_date": ["2026-07-22"]})
+        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
+            {"id": [1], "event_date": ["2026-07-22"]}
+        )
 
         config = {
             "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/data"},
@@ -620,4 +635,5 @@ class TestWatermarkSafetyAndPartitionEvents:
         assert completed_md["partition_key"] == "2026-07-22"
         assert completed_md["row_count"] == 1
         # And the fetch itself was partition-scoped via the request param
-        assert mock_fetch.call_args.kwargs["params"] == {"event_date": "2026-07-22"}
+        call_args = mock_get_fetcher.return_value.fetch.call_args
+        assert call_args.args[0]["request_config"]["params"] == {"event_date": "2026-07-22"}

@@ -36,12 +36,13 @@ import structlog
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from airflow.sdk import BaseNotifier
 # Task SDK Connection: resolves via the execution API in the SyncCallback/worker
 # context (3.3.0 #65269). airflow.models is DB-isolated there and must not be used.
 from airflow.sdk import Connection
+from airflow.sdk.definitions.context import Context
 
 # Configure structlog
 log = structlog.get_logger(__name__)
@@ -66,9 +67,13 @@ class DeadlineContext:
     reference: str
 
     @classmethod
-    def from_context(cls, context: Dict[str, Any]) -> "DeadlineContext":
-        dag_run = context.get("dag_run")
-        deadline_info = context.get("deadline") or {}
+    def from_context(cls, context: Context) -> "DeadlineContext":
+        # The real SyncCallback deadline payload isn't shaped like the declared
+        # Context TypedDict (it carries a "deadline" key Context doesn't have,
+        # and "dag_run" arrives as a plain dict) — treat it as an untyped dict here.
+        raw = cast(Dict[str, Any], context)
+        dag_run = raw.get("dag_run")
+        deadline_info = raw.get("deadline") or {}
         return cls(
             dag_id=cls._field(dag_run, "dag_id") or "unknown",
             logical_date=cls._field(dag_run, "logical_date"),
@@ -285,7 +290,7 @@ class KafkaDeadlineNotifier(BaseNotifier):
         self.topic = topic
         self.message = message
 
-    def notify(self, context: Dict[str, Any]) -> None:
+    def notify(self, context: Context) -> None:
         """
         Publish deadline violation event to Kafka.
 
@@ -390,7 +395,7 @@ class EmailDeadlineNotifier(BaseNotifier):
         self.subject = subject
         self.html_content = html_content
 
-    def notify(self, context: Dict[str, Any]) -> None:
+    def notify(self, context: Context) -> None:
         """
         Send deadline violation email.
 
@@ -494,7 +499,7 @@ class CompositeDeadlineNotifier(BaseNotifier):
             recipients=email_recipients, subject=email_subject
         )
 
-    def notify(self, context: Dict[str, Any]) -> None:
+    def notify(self, context: Context) -> None:
         """
         Send deadline notifications via Kafka (always) and Email (if enabled).
 

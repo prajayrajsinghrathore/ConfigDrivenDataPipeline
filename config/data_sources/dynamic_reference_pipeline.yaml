@@ -8,9 +8,10 @@ data_source:
 schedule:
   interval: "0 0 * * *"
   start_date: "2024-01-01"
-transformation:
-  new_columns:
-    doubled_value: "id * 2"
+transformations:
+  - type: formula
+    columns:
+      doubled_value: "id * 2"
 destination:
   primary:
     type: print_logs

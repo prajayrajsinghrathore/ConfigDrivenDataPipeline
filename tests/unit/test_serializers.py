@@ -9,11 +9,24 @@ Tests cover:
 - Error handling and version compatibility
 """
 
+from typing import Any, Dict, cast
+
 import pytest
 import pandas as pd
 import numpy as np
 
 from rlam_airflow_framework import serializers
+
+
+def _serialize(o: object) -> "tuple[Dict[str, Any], str, int, bool]":
+    """Typed wrapper around serializers.serialize() for test call sites.
+
+    serializers.serialize() returns Airflow serde's unbound ``U`` TypeVar for
+    its first element (matching Airflow's SerializerFunc protocol); every
+    call site here only ever handles the dict payload, so narrow it once.
+    """
+    result, classname, version, is_serialized = serializers.serialize(o)
+    return cast(Dict[str, Any], result), classname, version, is_serialized
 
 
 class TestDataFrameSerializer:
@@ -27,7 +40,7 @@ class TestDataFrameSerializer:
             "float_col": [1.1, 2.2, 3.3]
         })
         
-        result, classname, version, is_serialized = serializers.serialize(df)
+        result, classname, version, is_serialized = _serialize(df)
         
         assert is_serialized is True
         assert version == 1
@@ -43,7 +56,7 @@ class TestDataFrameSerializer:
         """Serialize an empty DataFrame."""
         df = pd.DataFrame()
         
-        result, classname, version, is_serialized = serializers.serialize(df)
+        result, classname, version, is_serialized = _serialize(df)
         
         assert is_serialized is True
         assert "data" in result
@@ -56,7 +69,7 @@ class TestDataFrameSerializer:
             "col2": ["a", "b", None]
         })
         
-        result, classname, version, is_serialized = serializers.serialize(df)
+        result, classname, version, is_serialized = _serialize(df)
         
         assert is_serialized is True
         assert "data" in result
@@ -65,7 +78,7 @@ class TestDataFrameSerializer:
         """Serializing non-DataFrame objects should return is_serialized=False."""
         obj = {"not": "a dataframe"}
         
-        result, classname, version, is_serialized = serializers.serialize(obj)
+        result, classname, version, is_serialized = _serialize(obj)
         
         assert is_serialized is False
         assert result == ""
@@ -79,7 +92,7 @@ class TestDataFrameSerializer:
             "value": [10, 20, 30]
         })
         
-        result, classname, version, is_serialized = serializers.serialize(df)
+        result, classname, version, is_serialized = _serialize(df)
         
         assert is_serialized is True
         assert "datetime64" in result["dtypes"]["date_col"]
@@ -91,7 +104,7 @@ class TestDataFrameSerializer:
             index=["a", "b", "c"]
         )
         
-        result, classname, version, is_serialized = serializers.serialize(df)
+        result, classname, version, is_serialized = _serialize(df)
         
         assert is_serialized is True
         # split orientation preserves index
@@ -199,7 +212,7 @@ class TestRoundTripSerialization:
         })
         
         # Serialize
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         
         # Deserialize
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
@@ -214,7 +227,7 @@ class TestRoundTripSerialization:
             "col2": ["a", "b", None]
         })
         
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
         
         # Check nulls are in same positions
@@ -226,7 +239,7 @@ class TestRoundTripSerialization:
         """Round-trip empty DataFrame."""
         original_df = pd.DataFrame()
         
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
         
         assert len(restored_df) == 0
@@ -239,7 +252,7 @@ class TestRoundTripSerialization:
             index=["row1", "row2", "row3"]
         )
         
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
         
         assert list(restored_df.index) == ["row1", "row2", "row3"]
@@ -251,7 +264,7 @@ class TestRoundTripSerialization:
             f"col_{i}": range(1000) for i in range(10)
         })
         
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
         
         pd.testing.assert_frame_equal(original_df, restored_df)
@@ -266,7 +279,7 @@ class TestRoundTripSerialization:
             "datetime": pd.date_range("2024-01-01", periods=3)
         })
         
-        serialized, classname, version, _ = serializers.serialize(original_df)
+        serialized, classname, version, _ = _serialize(original_df)
         restored_df = serializers.deserialize(pd.DataFrame, version, serialized)
         
         # Check column types are preserved
@@ -301,7 +314,7 @@ class TestEdgeCases:
             "unicode": ["Hello 世界", "Привет мир", "مرحبا بالعالم"]
         })
         
-        serialized, _, version, _ = serializers.serialize(df)
+        serialized, _, version, _ = _serialize(df)
         restored = serializers.deserialize(pd.DataFrame, version, serialized)
         
         pd.testing.assert_frame_equal(df, restored)
@@ -314,7 +327,7 @@ class TestEdgeCases:
             "col_with_underscores": [7, 8, 9]
         })
         
-        serialized, _, version, _ = serializers.serialize(df)
+        serialized, _, version, _ = _serialize(df)
         restored = serializers.deserialize(pd.DataFrame, version, serialized)
         
         pd.testing.assert_frame_equal(df, restored)
@@ -323,7 +336,7 @@ class TestEdgeCases:
         """Serialize DataFrame with single row."""
         df = pd.DataFrame({"col1": [1], "col2": ["a"]})
         
-        serialized, _, version, _ = serializers.serialize(df)
+        serialized, _, version, _ = _serialize(df)
         restored = serializers.deserialize(pd.DataFrame, version, serialized)
         
         pd.testing.assert_frame_equal(df, restored)
@@ -332,7 +345,7 @@ class TestEdgeCases:
         """Serialize DataFrame with single column."""
         df = pd.DataFrame({"only_col": [1, 2, 3, 4, 5]})
         
-        serialized, _, version, _ = serializers.serialize(df)
+        serialized, _, version, _ = _serialize(df)
         restored = serializers.deserialize(pd.DataFrame, version, serialized)
         
         pd.testing.assert_frame_equal(df, restored)

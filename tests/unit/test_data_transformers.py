@@ -15,7 +15,7 @@ depends on Airflow which doesn't run natively on Windows.
 import pytest
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Literal, Optional, cast
 
 
 # =============================================================================
@@ -37,11 +37,11 @@ class DataTransformer:
 
     def filter_rows(self, df: pd.DataFrame, condition: str) -> pd.DataFrame:
         """Filter rows based on a condition string."""
-        return df.query(condition)
+        return cast(pd.DataFrame, df.query(condition))
 
     def select_columns(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
         """Select specific columns."""
-        return df[columns]
+        return cast(pd.DataFrame, df[columns])
 
     def add_formula_column(
         self, df: pd.DataFrame, column_name: str, formula: str
@@ -76,13 +76,20 @@ class DataTransformer:
         return df.groupby(group_by).agg(aggregations).reset_index()
 
     def drop_duplicates(
-        self, df: pd.DataFrame, subset: List[str] = None, keep: str = "first"
+        self,
+        df: pd.DataFrame,
+        subset: Optional[List[str]] = None,
+        keep: Literal["first", "last", False] = "first",
     ) -> pd.DataFrame:
         """Drop duplicate rows."""
         return df.drop_duplicates(subset=subset, keep=keep)
 
     def fill_nulls(
-        self, df: pd.DataFrame, column: str, value: Any = None, method: str = None
+        self,
+        df: pd.DataFrame,
+        column: str,
+        value: Any = None,
+        method: Optional[str] = None,
     ) -> pd.DataFrame:
         """Fill null values in a column."""
         result = df.copy()
@@ -99,7 +106,7 @@ class DataTransformer:
         return result
 
     def execute_pipeline(
-        self, df: pd.DataFrame, transformations: List[Dict]
+        self, df: pd.DataFrame, transformations: List[Dict[str, Any]]
     ) -> pd.DataFrame:
         """Execute a pipeline of transformations."""
         result = df.copy()
@@ -110,12 +117,16 @@ class DataTransformer:
             if t_type == "rename_columns":
                 result = self.rename_columns(result, transform.get("mapping", {}))
             elif t_type == "filter_rows":
-                result = self.filter_rows(result, transform.get("condition"))
+                result = self.filter_rows(
+                    result, cast(str, transform.get("condition"))
+                )
             elif t_type == "select_columns":
                 result = self.select_columns(result, transform.get("columns", []))
             elif t_type == "add_formula_column":
                 result = self.add_formula_column(
-                    result, transform.get("column_name"), transform.get("formula")
+                    result,
+                    cast(str, transform.get("column_name")),
+                    cast(str, transform.get("formula")),
                 )
 
         return result

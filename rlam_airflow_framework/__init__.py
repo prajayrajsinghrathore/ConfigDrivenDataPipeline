@@ -26,15 +26,24 @@ if not hasattr(os, "register_at_fork"):
     # so later `from concurrent.futures import ThreadPoolExecutor` keeps working.
     import concurrent.futures.thread  # noqa: F401
 
-    os.register_at_fork = lambda *args, **kwargs: None
+    os.register_at_fork = lambda *args, **kwargs: None  # type: ignore[attr-defined]
 
 __version__ = "1.0.0"
 __author__ = "RLAM Data Platform Team"
 
 # Export commonly used classes for convenience
-from rlam_airflow_framework.config_loader import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
 from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 from rlam_airflow_framework.tenant_context import TenantContext, TenantValidationError
+
+# Destination strategy extension point: register custom sinks via
+# DESTINATION_REGISTRY.register(MyLoader()) where MyLoader subclasses DestinationLoader.
+from rlam_airflow_framework.destinations import (
+    DestinationLoader,
+    DestinationRegistry,
+    DESTINATION_REGISTRY,
+    LoadContext,
+)
 
 __all__ = [
     "ConfigLoader",
@@ -42,6 +51,10 @@ __all__ = [
     "DAGFactoryV2",
     "TenantContext",
     "TenantValidationError",
+    "DestinationLoader",
+    "DestinationRegistry",
+    "DESTINATION_REGISTRY",
+    "LoadContext",
     "__version__",
     "__author__",
 ]

@@ -578,7 +578,7 @@ class TestNoUnknownTopLevelKeys:
         "validation",
         "partition",
         "incremental",
-        "transformation",
+        "transformations",
         "event",
     }
 

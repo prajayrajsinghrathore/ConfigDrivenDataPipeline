@@ -15,7 +15,7 @@ depends on Airflow which doesn't run natively on Windows.
 import pytest
 import pandas as pd
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, cast
 
 
 # =============================================================================
@@ -31,7 +31,7 @@ class DataQualityResult:
     passed: bool
     total_count: int
     failed_count: int
-    details: Dict[str, Any] = None
+    details: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -66,7 +66,7 @@ class DataQualityValidator:
             check_name=f"not_null_{column}",
             passed=null_rate <= threshold,
             total_count=total,
-            failed_count=null_count,
+            failed_count=cast(int, null_count),
             details={"null_rate": null_rate},
         )
 
@@ -86,7 +86,7 @@ class DataQualityValidator:
             check_name=f"unique_{'_'.join(columns)}",
             passed=dup_count == 0,
             total_count=len(df),
-            failed_count=dup_count,
+            failed_count=cast(int, dup_count),
             details={"duplicate_count": dup_count},
         )
 
@@ -102,7 +102,7 @@ class DataQualityValidator:
             check_name=f"positive_{column}",
             passed=negative_count == 0,
             total_count=len(df),
-            failed_count=negative_count,
+            failed_count=cast(int, negative_count),
             details={"negative_values": df.loc[negative_mask, column].tolist()[:10]},
         )
 
@@ -110,8 +110,8 @@ class DataQualityValidator:
         self,
         df: pd.DataFrame,
         column: str,
-        min_value: float = None,
-        max_value: float = None,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
     ) -> DataQualityResult:
         """Check that values are within a range."""
         if column not in df.columns:
@@ -130,7 +130,7 @@ class DataQualityValidator:
             check_name=f"range_{column}",
             passed=failed_count == 0,
             total_count=len(df),
-            failed_count=failed_count,
+            failed_count=cast(int, failed_count),
             details={"min": min_value, "max": max_value},
         )
 
@@ -148,7 +148,7 @@ class DataQualityValidator:
             check_name=f"pattern_{column}",
             passed=failed_count == 0,
             total_count=len(df),
-            failed_count=failed_count,
+            failed_count=cast(int, failed_count),
             details={"pattern": pattern},
         )
 
@@ -197,19 +197,19 @@ class DataQualityValidator:
             check_name=f"completeness_{column}",
             passed=completeness >= min_completeness,
             total_count=total,
-            failed_count=total - non_null,
+            failed_count=cast(int, total - non_null),
             details={"completeness": completeness, "threshold": min_completeness},
         )
 
     def run_checks(
-        self, df: pd.DataFrame, checks: List[Dict]
+        self, df: pd.DataFrame, checks: List[Dict[str, Any]]
     ) -> List[DataQualityResult]:
         """Run multiple checks from configuration."""
         results = []
 
         for check in checks:
             check_type = check.get("type")
-            column = check.get("column")
+            column = cast(str, check.get("column"))
 
             try:
                 if check_type == "not_null":
@@ -226,7 +226,9 @@ class DataQualityValidator:
                         max_value=check.get("max"),
                     )
                 elif check_type == "pattern":
-                    result = self.check_pattern(df, column, check.get("pattern"))
+                    result = self.check_pattern(
+                        df, column, cast(str, check.get("pattern"))
+                    )
                 else:
                     continue
 

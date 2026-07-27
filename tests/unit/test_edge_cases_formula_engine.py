@@ -17,11 +17,12 @@ import pytest
 import pandas as pd
 import numpy as np
 
-# Import implementation
 from rlam_airflow_framework.formula_engine import (
     FormulaEngine,
     FormulaError,
     get_formula_engine,
+)
+from rlam_airflow_framework.formula_engine.security import (
     MAX_FORMULA_LENGTH,
     MAX_NESTING_DEPTH,
 )

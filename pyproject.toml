@@ -78,7 +78,16 @@ Repository = "https://dev.azure.com/rlam/DataPlatform/_git/airflow-framework"
 
 # Setuptools configuration
 [tool.setuptools]
-packages = ["rlam_airflow_framework"]
+packages = [
+    "rlam_airflow_framework",
+    "rlam_airflow_framework.destinations",
+    "rlam_airflow_framework.data_quality",
+    "rlam_airflow_framework.data_fetchers",
+    "rlam_airflow_framework.transformers",
+    "rlam_airflow_framework.transformers.enrichments",
+    "rlam_airflow_framework.formula_engine",
+    "rlam_airflow_framework.formula_engine.evaluators",
+]
 
 [tool.setuptools.package-data]
 rlam_airflow_framework = ["py.typed"]

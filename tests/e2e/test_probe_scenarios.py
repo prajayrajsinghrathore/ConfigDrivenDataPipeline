@@ -68,7 +68,7 @@ def _kafka_topic_lines(topic: str) -> list:
         f"--topic {topic} --from-beginning --timeout-ms 5000 2>/dev/null",
         check=False,
     )
-    return [l for l in out.splitlines() if l.strip().startswith("{")]
+    return [line for line in out.splitlines() if line.strip().startswith("{")]
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +148,7 @@ def mock_api():
 class TestDeadlineMissProbe:
     def test_deadline_miss_emits_exactly_one_event(self, headers):
         dag_id = "sandbox_deadline_probe"
-        before = sum(1 for l in _kafka_topic_lines("pipeline-alerts") if dag_id in l)
+        before = sum(1 for line in _kafka_topic_lines("pipeline-alerts") if dag_id in line)
 
         _unpause(dag_id, headers)
         try:
@@ -159,7 +159,7 @@ class TestDeadlineMissProbe:
             deadline = time.time() + 360
             after = before
             while time.time() < deadline:
-                after = sum(1 for l in _kafka_topic_lines("pipeline-alerts") if dag_id in l)
+                after = sum(1 for line in _kafka_topic_lines("pipeline-alerts") if dag_id in line)
                 if after > before:
                     break
                 time.sleep(15)

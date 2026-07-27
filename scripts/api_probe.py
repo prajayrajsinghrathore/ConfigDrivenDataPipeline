@@ -62,7 +62,7 @@ except ImportError as e:
     print(f"[FAIL] NEVER_EXPIRE missing: {e}")
 
 try:
-    from airflow.sdk.execution_time.task_runner import get_current_context  # noqa: F401 - availability probe
+    from airflow.sdk.execution_time.task_runner import get_current_context  # noqa: F401 - availability probe  # pyright: ignore[reportAttributeAccessIssue]
     print("[OK] get_current_context exists")
 except ImportError as e:
     print(f"[FAIL] get_current_context missing: {e}")

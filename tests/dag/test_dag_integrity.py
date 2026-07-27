@@ -287,7 +287,7 @@ class TestDagFactory:
     @pytest.fixture
     def register_test_tenant(self, monkeypatch):
         """Inject a known tenant so the test is environment-independent."""
-        from rlam_airflow_framework.config_loader import ConfigLoader
+        from rlam_airflow_framework.config import ConfigLoader
 
         original = ConfigLoader.load_global_settings
 
