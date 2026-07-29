@@ -3,7 +3,7 @@
 Data sources and sinks for the hybrid engine.
 """
 
-from typing import Any, Mapping, cast
+from typing import cast
 import duckdb
 
 from rlam_airflow_framework.engine.base import DataSource, DataSink, SourceSpec, DestinationSpec, WriteResult

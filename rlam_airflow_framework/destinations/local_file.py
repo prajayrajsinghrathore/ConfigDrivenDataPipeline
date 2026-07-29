@@ -72,16 +72,14 @@ class LocalFileLoader(DestinationLoader):
             )
         return candidate
 
-    def _write(self, df, dest_config, ctx):
+    def _write(self, df_path: str, dest_config, ctx):
         file_path = dest_config["path"]
         file_format = dest_config.get("format", "parquet")
         logger = _log.bind(trace_id=ctx.correlation_id)
 
         safe_path = self._resolve_safe_path(file_path)
 
-        # Deterministic per-task-instance suffix (not wall-clock) so retries
-        # and cleared task instances overwrite the same file instead of
-        # producing a duplicate that downstream consumers double-count.
+        # Deterministic per-task-instance suffix
         run_token = sanitize_for_filename(ctx.correlation_id)
         base, ext = os.path.splitext(str(safe_path))
         if not ext:
@@ -89,7 +87,7 @@ class LocalFileLoader(DestinationLoader):
         full_path = f"{base}_{run_token}{ext}"
 
         logger.info(
-            f"Saving to local file: {full_path}, format={file_format}, rows={len(df)}"
+            f"Saving to local file: {full_path}, format={file_format}"
         )
 
         try:
@@ -97,18 +95,24 @@ class LocalFileLoader(DestinationLoader):
             os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
 
             if file_format == "parquet":
-                df.to_parquet(full_path, index=False)
+                import shutil
+                shutil.copy(df_path, full_path)
             elif file_format == "csv":
-                df.to_csv(full_path, index=False)
+                import duckdb
+                duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (HEADER, FORMAT CSV)")
             elif file_format == "json":
-                df.to_json(full_path, orient="records", indent=2)
+                import duckdb
+                duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (FORMAT JSON, ARRAY TRUE)")
             else:
                 raise ValueError(
                     f"Unsupported format: {file_format}. Supported: parquet, csv, json"
                 )
 
             elapsed = time.time() - start_time
-            logger.info(f"Successfully saved to {full_path}, elapsed={elapsed:.2f}s")
+            logger.info(
+                f"Successfully saved to local file: {full_path}, "
+                f"elapsed={elapsed:.2f}s"
+            )
             return full_path
 
         except Exception as e:

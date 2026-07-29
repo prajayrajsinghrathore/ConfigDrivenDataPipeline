@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Engine Modernization
 - **Out-of-Core Federated Lookups**: Re-architected `SnowflakeLookupProvider` to use native PyArrow batching (`fetch_arrow_batches()`) instead of loading full result sets into Pandas DataFrames. Streamed batches are dynamically staged as local Parquet partitions, allowing DuckDB to execute native out-of-core `LEFT JOIN` aggregations entirely isolated from Airflow Worker memory limits.
 - **Hybrid Pipeline Transformation Engine**: Upgraded the core pipeline execution layer. Validated configuration boundaries are now dynamically resolved to `DataBackend` engines (DuckDB/Polars), strictly guarding against legacy Pandas contamination.
+- **Pandas Removal & Parquet Staging**: Refactored fetchers (`HttpFetcher`, `SftpFetcher`), destinations (`PrintLogsLoader`, `SnowflakeStageLoader`), and Data Quality logic to strictly use path-based file references, permanently replacing in-memory Pandas `DataFrame` dependencies with Parquet files.
+- **Soda 4 & Out-of-Core Validation**: Migrated Soda 3 quality checks to Soda 4 Data Contracts. Implemented `Soda4ContractEngine` using `soda-duckdb` to natively validate DuckDB views directly against staged Parquet files without materializing to Pandas.
 
 
 ### Security & Multi-Tenancy

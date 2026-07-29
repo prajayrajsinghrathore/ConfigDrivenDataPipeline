@@ -7,10 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, Optional
 
-import pandas as pd
 import structlog
-
-from rlam_airflow_framework.utils.validation import validate_dataframe
 
 _log = structlog.get_logger(__name__)
 
@@ -48,22 +45,22 @@ class DestinationLoader(ABC):
     consumes_dataframe: ClassVar[bool] = True
 
     def load(
-        self, df: pd.DataFrame, dest_config: Dict[str, Any], ctx: LoadContext
+        self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext
     ) -> str:
         """Template method: shared guards + logging, then delegate to ``_write``."""
+        import os
         if self.consumes_dataframe:
-            validate_dataframe(df, self.dest_type)
-            if df.empty:
+            if not os.path.exists(df_path):
                 _log.bind(correlation_id=ctx.correlation_id).warning(
-                    "Empty DataFrame provided; nothing to load",
+                    "Missing Parquet file provided; nothing to load",
                     dest_type=self.dest_type,
                 )
-                return "No data to load (empty DataFrame)"
-        return self._write(df, dest_config, ctx)
+                return "No data to load (missing file)"
+        return self._write(df_path, dest_config, ctx)
 
     @abstractmethod
     def _write(
-        self, df: pd.DataFrame, dest_config: Dict[str, Any], ctx: LoadContext
+        self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext
     ) -> str:
         """Perform the actual load; return a human-readable summary."""
         raise NotImplementedError

@@ -2,7 +2,7 @@
 """Object storage loader (Azure/S3/GCS via Airflow ObjectStoragePath)."""
 
 import time
-from typing import cast
+from typing import cast, BinaryIO
 
 import structlog
 from airflow.sdk import ObjectStoragePath
@@ -23,21 +23,21 @@ class ObjectStorageLoader(DestinationLoader):
 
     dest_type = "object_storage"
 
-    def _write(self, df, dest_config, ctx):
+    def _write(self, df_path: str, dest_config, ctx):
         uri = dest_config.get("uri")
         path = dest_config.get("path")
         conn_id = dest_config.get("conn_id")
         file_format = dest_config.get("format", "parquet")
         logger = _log.bind(trace_id=ctx.correlation_id)
 
+        destination_str = uri or (f"{path}@{conn_id}" if path and conn_id else "unknown")
+
         try:
             if uri:
                 storage_path = ObjectStoragePath(uri)
-                destination_str = uri
             elif path and conn_id:
                 # both narrowed to non-None here, satisfying the checker
                 storage_path = ObjectStoragePath(path, conn_id=conn_id)
-                destination_str = f"{path}@{conn_id}"
             else:
                 raise ValueError(
                     "Must provide either 'uri' parameter "
@@ -45,10 +45,7 @@ class ObjectStorageLoader(DestinationLoader):
                     "or both 'path' and 'conn_id' parameters"
                 )
 
-            # Deterministic per-task-instance suffix (not wall-clock) so
-            # retries and cleared task instances overwrite the same object
-            # instead of producing a duplicate that downstream consumers
-            # double-count.
+            # Deterministic per-task-instance suffix
             run_token = sanitize_for_filename(ctx.correlation_id)
             parent = storage_path.parent
             stem = storage_path.stem
@@ -57,24 +54,42 @@ class ObjectStorageLoader(DestinationLoader):
 
             logger.info(
                 f"Starting object storage upload: {run_scoped_path}, "
-                f"format={file_format}, rows={len(df)}"
+                f"format={file_format}"
             )
             start_time = time.time()
 
-            # These no-path serializations return bytes/str (never None); the
-            # pandas stubs type them as Optional, so cast to satisfy write_*.
-            if file_format == "parquet":
-                run_scoped_path.write_bytes(cast(bytes, df.to_parquet(index=False)))
-            elif file_format == "csv":
-                run_scoped_path.write_text(cast(str, df.to_csv(index=False)))
-            elif file_format == "json":
-                run_scoped_path.write_text(
-                    cast(str, df.to_json(orient="records", indent=2))
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported format: {file_format}. Supported: parquet, csv, json"
-                )
+            import duckdb
+            import tempfile
+            import shutil
+            import os
+
+            local_source = df_path
+            
+            # If a different format is requested, use DuckDB to convert out-of-core
+            if file_format != "parquet":
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_format}")
+                tmp.close()
+                local_source = tmp.name
+                
+                try:
+                    if file_format == "csv":
+                        duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (HEADER, FORMAT CSV)")
+                    elif file_format == "json":
+                        duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (FORMAT JSON, ARRAY TRUE)")
+                    else:
+                        raise ValueError(f"Unsupported format: {file_format}. Supported: parquet, csv, json")
+                except Exception as e:
+                    if os.path.exists(local_source):
+                        os.remove(local_source)
+                    raise e
+
+            # Stream out-of-core to the remote object storage
+            with open(local_source, 'rb') as f_in:
+                with run_scoped_path.open('wb') as f_out:
+                    shutil.copyfileobj(f_in, cast(BinaryIO, f_out))
+                    
+            if local_source != df_path and os.path.exists(local_source):
+                os.remove(local_source)
 
             elapsed = time.time() - start_time
             logger.info(

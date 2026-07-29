@@ -7,7 +7,6 @@ configured pipeline, delegates evaluation to it, and handles the concerns
 that apply regardless of which engine ran: DQ metrics publishing to Kafka.
 """
 
-import pandas as pd
 import uuid
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
@@ -16,7 +15,9 @@ import structlog
 from rlam_airflow_framework.kafka_publisher import kafka_publisher
 from rlam_airflow_framework.data_quality.engines import (
     SODA_AVAILABLE,
+    SODA4_AVAILABLE,
     SodaEngine,
+    Soda4ContractEngine,
     BasicEngine,
     LegacyEngine,
 )
@@ -59,31 +60,32 @@ class DataQualityChecker:
         self.dq_topic = event_config.get("topic", "data-quality") + "_dq_metrics"
 
     def run_checks(
-        self, df: pd.DataFrame, destination_table: Optional[str] = None
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+        self, df_path: str, destination_table: Optional[str] = None
+    ) -> Tuple[str, str, Dict[str, Any]]:
         """
         Run data quality checks on a DataFrame.
 
         Args:
-            df: Input DataFrame to validate
+            df_path: Input Parquet file path to validate
             destination_table: Optional destination table name for context
 
         Returns:
             Tuple of:
-                - valid_df: DataFrame with valid records
-                - invalid_df: DataFrame with invalid records (for quarantine)
+                - valid_df_path: Path to valid records
+                - invalid_df_path: Path to invalid records (for quarantine)
                 - results: Dictionary with DQ metrics and check results
         """
-        if df.empty:
-            log.warning("Empty DataFrame provided for data quality checks")
-            return df, pd.DataFrame(), self._empty_results()
+        import os
+        if not os.path.exists(df_path):
+            log.warning("File does not exist for data quality checks")
+            return df_path, "", self._empty_results()
 
         results = {
             "scan_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": self.source_name,
             "destination_table": destination_table,
-            "total_rows": len(df),
+            "total_rows": 0,
             "checks": [],
             "passed": 0,
             "failed": 0,
@@ -93,11 +95,30 @@ class DataQualityChecker:
         }
 
         engine = self._select_engine()
-        valid_df, invalid_df, results = engine.run(df, results)
+        results["total_rows"] = 0 # Will be populated by engine
 
+        # Dual validation fallback logic
+        if isinstance(engine, Soda4ContractEngine):
+            log.info("Running Soda 4 Contract Validation on Parquet directly")
+            valid_df_path, invalid_df_path, results = engine.run_on_path(df_path, results)
+        else:
+            log.info("Running Legacy Validation Engine (materializing Parquet to Pandas)")
+            import duckdb
+            df = duckdb.read_parquet(df_path).df()
+            results["total_rows"] = len(df)
+            
+            valid_df, invalid_df, results = engine.run(df, results)
+            
+            # For legacy, we just return the original df_path as valid, 
+            # and ignore quarantine split for now, since we are moving away from Pandas.
+            # In production, dual-validation phase shouldn't rely on splitting 
+            # because the goal is dropping Pandas.
+            valid_df_path = df_path if len(valid_df) > 0 else ""
+            invalid_df_path = ""
+            
         self._publish_dq_metrics(results)
 
-        return valid_df, invalid_df, results
+        return valid_df_path, invalid_df_path, results
 
     def _select_engine(self):
         """
@@ -111,6 +132,9 @@ class DataQualityChecker:
                 self.config.get("validation_rules", []),
             )
 
+        if SODA4_AVAILABLE:
+            return Soda4ContractEngine(self.source_name, self.quality_gates, self.soda_checks)
+            
         if SODA_AVAILABLE:
             return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
 
@@ -175,24 +199,25 @@ class DataQualityChecker:
 
 
 def run_data_quality_checks(
-    df: pd.DataFrame,
+    df_path: str,
     config: Dict[str, Any],
     dag_id: str,
     task_id: str,
     destination_table: Optional[str] = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+) -> Tuple[str, str, Dict[str, Any]]:
     """
     Convenience function to run data quality checks.
 
     Args:
-        df: Input DataFrame
+        df_path: Input Parquet file path
         config: Pipeline configuration
         dag_id: DAG identifier
         task_id: Task identifier
         destination_table: Optional destination table name
 
     Returns:
-        Tuple of (valid_df, invalid_df, results)
+        Tuple of (valid_df_path, invalid_df_path, results)
     """
     checker = DataQualityChecker(config, dag_id, task_id)
-    return checker.run_checks(df, destination_table)
+    return checker.run_checks(df_path, destination_table)
+

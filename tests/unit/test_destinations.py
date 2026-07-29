@@ -51,27 +51,34 @@ def test_register_overrides_same_type():
     assert registry.get("print_logs") is second
 
 
-def test_print_logs_loader_returns_summary():
+def test_print_logs_loader_returns_summary(tmp_path):
     df = pd.DataFrame({"a": [1, 2, 3]})
-    result = PrintLogsLoader().load(df, {"type": "print_logs"}, _ctx())
+    df_path = str(tmp_path / "test.parquet")
+    df.to_parquet(df_path, index=False)
+    result = PrintLogsLoader().load(df_path, {"type": "print_logs"}, _ctx())
     assert result == "Printed 3 rows to logs"
 
 
-def test_custom_loader_added_without_touching_existing_code():
+def test_custom_loader_added_without_touching_existing_code(tmp_path):
     """OCP: a new sink is a new subclass implementing _write + one register() call."""
 
     class EchoLoader(DestinationLoader):
         dest_type = "echo"
 
-        def _write(self, df, dest_config, ctx):
-            return f"echo:{dest_config.get('message', '')}:{len(df)}"
+        def _write(self, df_path, dest_config, ctx):
+            import duckdb
+            res = duckdb.query(f"SELECT count(*) FROM '{df_path}'").fetchone()
+            count = res[0] if res else 0
+            return f"echo:{dest_config.get('message', '')}:{count}"
 
     registry = DestinationRegistry()
     registry.register(EchoLoader())
 
     df = pd.DataFrame({"x": [1, 2]})
+    df_path = str(tmp_path / "test2.parquet")
+    df.to_parquet(df_path, index=False)
     loader = registry.get("echo")
-    assert loader.load(df, {"type": "echo", "message": "hi"}, _ctx()) == "echo:hi:2"
+    assert loader.load(df_path, {"type": "echo", "message": "hi"}, _ctx()) == "echo:hi:2"
     assert "echo" in registry.supported_types()
 
 

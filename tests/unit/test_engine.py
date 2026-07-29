@@ -10,9 +10,8 @@ from unittest.mock import patch, MagicMock
 from typing import cast, Any
 
 import duckdb
-from pydantic import ValidationError
 
-from rlam_airflow_framework.engine.data import DataBackend, ExecutionData, DuckDBData
+from rlam_airflow_framework.engine.data import DuckDBData
 from rlam_airflow_framework.engine.context import ExecutionContext
 from rlam_airflow_framework.engine.config import (
     TypeCastStepConfig, FormulaStepConfig, FilterStepConfig, AggregationStepConfig, SnowflakeLookupConfig
@@ -128,10 +127,9 @@ class TestDuckDBFilterStep:
     def test_chained_filters_via_pipeline(self):
         from rlam_airflow_framework.engine.planner import PipelinePlanner
         from rlam_airflow_framework.engine.config import PipelineConfig
-        from rlam_airflow_framework.engine.io import ParquetDataSource
         from rlam_airflow_framework.engine.base import SourceSpec, DestinationSpec
         
-        df = pl.DataFrame({"value": [10, 20, 30, 40, 50], "category": ["A", "B", "A", "B", "A"]})
+        df = pl.DataFrame({"value": [10, 20, 30, 40, 50], "category": ["A", "B", "A", "B", "A"]})  # noqa: F841 (used via duckdb frame introspection)
         rel = duckdb.sql("SELECT * FROM df")
         data = DuckDBData(rel)
         

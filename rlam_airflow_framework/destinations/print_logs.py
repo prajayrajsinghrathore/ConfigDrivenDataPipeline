@@ -13,13 +13,25 @@ class PrintLogsLoader(DestinationLoader):
 
     dest_type = "print_logs"
 
-    def _write(self, df, dest_config, ctx):
+    def _write(self, df_path: str, dest_config, ctx):
         max_rows = dest_config.get("max_rows", 10)
-        _log.info(f"=== DATA OUTPUT ({len(df)} total rows) ===")
-        _log.info(f"Columns: {list(df.columns)}")
-        _log.info(f"Data types:\n{df.dtypes}")
-        _log.info(f"First {max_rows} rows:\n{df.head(max_rows).to_string()}")
-        if len(df) > max_rows:
-            _log.info(f"... and {len(df) - max_rows} more rows")
+        import duckdb
+        try:
+            res = duckdb.query(f"SELECT count(*) FROM '{df_path}'").fetchone()
+            row_count = res[0] if res else 0
+        except Exception:
+            row_count = 0
+            
+        _log.info(f"=== DATA OUTPUT ({row_count} total rows) ===")
+        try:
+            head_df = duckdb.query(f"SELECT * FROM '{df_path}' LIMIT {max_rows}").df()
+            _log.info(f"Columns: {list(head_df.columns)}")
+            _log.info(f"Data types:\n{head_df.dtypes}")
+            _log.info(f"First {max_rows} rows:\n{head_df.to_string()}")
+            if row_count > max_rows:
+                _log.info(f"... and {row_count - max_rows} more rows")
+        except Exception as e:
+            _log.error(f"Failed to read parquet for preview: {e}")
+            
         _log.info("=== END DATA OUTPUT ===")
-        return f"Printed {len(df)} rows to logs"
+        return f"Printed {row_count} rows to logs"

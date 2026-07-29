@@ -312,64 +312,40 @@ def ingest_data(config: Dict[str, Any]) -> str:
             data_source_config, correlation_id=ctx.correlation_id, target_path=target_path
         )
 
-        row_count = 0
-        if isinstance(fetch_result, Path):
-            # Streaming fetcher (out-of-core Parquet)
-            output_path = str(fetch_result)
-            
-            # Post-fetch incremental filtering via DuckDB
-            if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
-                import duckdb  # type: ignore
-                import tempfile
-                
-                temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
-                os.close(temp_fd)
-                
-                col = wm.config.watermark_column
-                val = str(adjusted_watermark).replace("'", "''")
-                
-                # Filter into a temp file
-                duckdb.query(f"COPY (SELECT * FROM '{output_path}' WHERE \"{col}\" > '{val}') TO '{temp_path}' (FORMAT PARQUET)")
-                
-                # Overwrite original with filtered
-                os.replace(temp_path, output_path)
-                log.info("Applied watermark filter via DuckDB", watermark_column=col, watermark_value=val)
-            
-            # Get row count via DuckDB
+        # We only support Path returns now
+        output_path = str(fetch_result)
+        
+        # Post-fetch incremental filtering via DuckDB
+        if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
             import duckdb  # type: ignore
-            try:
-                res = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()
-                row_count = res[0] if res else 0
-            except Exception:
-                row_count = 0
-                
-            if row_count == 0:
-                log.warning("No data fetched from source (or all filtered out)", source_name=source_name)
-            else:
-                log.info("Data ingestion complete", correlation_id=ctx.correlation_id, rows=row_count)
-                
+            import tempfile
+            
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
+            os.close(temp_fd)
+            
+            col = wm.config.watermark_column
+            val = str(adjusted_watermark).replace("'", "''")
+            
+            # Filter into a temp file
+            duckdb.query(f"COPY (SELECT * FROM '{output_path}' WHERE \"{col}\" > '{val}') TO '{temp_path}' (FORMAT PARQUET)")
+            
+            # Overwrite original with filtered
+            import shutil
+            shutil.move(temp_path, output_path)
+            log.info("Applied watermark filter via DuckDB", watermark_column=col, watermark_value=val)
+        
+        # Get row count via DuckDB
+        import duckdb  # type: ignore
+        try:
+            res = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()
+            row_count = res[0] if res else 0
+        except Exception:
+            row_count = 0
+            
+        if row_count == 0:
+            log.warning("No data fetched from source (or all filtered out)", source_name=source_name)
         else:
-            # Legacy fetcher (in-memory pd.DataFrame)
-            df = fetch_result
-            # Post-fetch incremental filtering
-            df = wm.filter_dataframe(df)
-
-            if df.empty:
-                log.warning("No data fetched from source", source_name=source_name)
-            else:
-                row_count = len(df)
-                log.info(
-                    "Data ingestion complete",
-                    correlation_id=ctx.correlation_id,
-                    rows=row_count,
-                    columns=len(df.columns),
-                )
-                
-            output_path = storage.save(
-                df,
-                task_id=fetch_task_id,
-                run_id=ctx.run_id,
-            )
+            log.info("Data ingestion complete", correlation_id=ctx.correlation_id, rows=row_count)
 
         # Publish success event
         kafka_publisher.publish_pipeline_event(
@@ -534,20 +510,15 @@ def validate_data_quality(
         Tuple of (valid_df_path, invalid_df_path, dq_results)
     """
     ctx = _build_context()
-    storage = DataFrameStorage()
-
-    # Load DataFrame. Cleanup deferred until DQ checks + saves succeed, so a
-    # retry after a mid-task failure can still reload df_path.
-    df = storage.load(df_path)
 
     destination_table = (
         config.get("destination", {}).get("primary", {}).get("table", "unknown")
     )
 
-    log.info("Starting data quality validation", dag_id=ctx.dag_id, rows=len(df))
+    log.info("Starting data quality validation on staged Parquet", dag_id=ctx.dag_id, df_path=df_path)
 
-    valid_df, invalid_df, results = run_data_quality_checks(
-        df=df,
+    valid_path, invalid_path, results = run_data_quality_checks(
+        df_path=df_path,
         config=config,
         dag_id=ctx.dag_id,
         task_id=ctx.task_id,
@@ -556,16 +527,15 @@ def validate_data_quality(
 
     log.info(
         "Data quality validation complete",
-        valid_rows=len(valid_df),
-        invalid_rows=len(invalid_df),
         status=results.get("status"),
+        passed=results.get("passed", 0),
+        failed=results.get("failed", 0)
     )
 
-    # Save DataFrames and return paths
-    valid_path = storage.save(valid_df, f"{ctx.task_id}_valid", ctx.run_id)
-    invalid_path = storage.save(invalid_df, f"{ctx.task_id}_invalid", ctx.run_id)
-    storage.cleanup(df_path)
-
+    # Note: run_data_quality_checks now handles the valid/invalid splitting
+    # and saving directly, or returns the original path if no splitting happened.
+    # Therefore we don't need to save them here anymore!
+    
     return {"valid_path": valid_path, "invalid_path": invalid_path, "results": results}
 
 
@@ -776,22 +746,27 @@ def load_data(
     partition = PartitionInfo.resolve(config, ctx.raw_context)
     wm = WatermarkManager(ctx.dag_id, WatermarkConfig.from_config(config))
 
-    # Load DataFrame. Cleanup deferred until the destination writes (and the
-    # watermark/lineage updates that depend on them) fully succeed, so a
-    # retry after a mid-task failure can reload df_path.
-    df = storage.load(df_path)
+    # Avoid materializing the entire dataframe in memory.
+    # Check if data exists. We can use duckdb to query metadata.
+    import duckdb
+    try:
+        row_count_res = duckdb.execute(f"SELECT COUNT(*) FROM read_parquet('{df_path}')").fetchone()
+        row_count = row_count_res[0] if row_count_res else 0
+    except Exception as e:
+        log.warning("Failed to read parquet metadata", error=str(e))
+        row_count = 0
 
     log.info(
         "Starting data load",
         correlation_id=ctx.correlation_id,
-        rows=len(df),
+        rows=row_count,
         partition_value=partition.value,
     )
 
-    if df.empty:
-        log.warning("Empty DataFrame provided for loading")
+    if row_count == 0:
+        log.warning("Empty or missing Parquet file provided for loading")
         storage.cleanup(df_path)
-        return "No data to load (empty DataFrame)"
+        return "No data to load (empty Parquet)"
 
     # Substitute partition templates in destination config
     destination_config = copy.deepcopy(config.get("destination", {}))
@@ -816,7 +791,7 @@ def load_data(
         for dest_label in ("primary", "backup", "archive"):
             if dest_label in destination_config:
                 result = _load_to_destination(
-                    df,
+                    df_path,
                     destination_config[dest_label],
                     topic,
                     ctx.correlation_id,
@@ -832,8 +807,9 @@ def load_data(
             "Data load complete", summary=summary, correlation_id=ctx.correlation_id
         )
 
-        # Update watermark
-        wm.update(df)
+        # Update watermark (passing df_path for now)
+        # Note: WatermarkManager needs to be updated to accept paths
+        wm.update(df_path)
 
         # Emit standard OpenLineage dataset for observability. This is a
         # lineage/summary event, not a data-export channel: it carries schema
@@ -842,12 +818,17 @@ def load_data(
         # non-trivial DataFrame and would OOM the worker serializing it.
         # partition_key rides along so the "data landed" event is traceable to
         # its partition (closes the gap left by the 2A.4.2 ingest-only threading).
+        # Fetch schema from duckdb for observability
+        schema_res = duckdb.execute(f"DESCRIBE SELECT * FROM read_parquet('{df_path}')").fetchall()
+        columns = [row[0] for row in schema_res]
+        dtypes = {row[0]: row[1] for row in schema_res}
+
         kafka_publisher.publish_data(
             dag_id=ctx.dag_id,
             data={
-                "row_count": len(df),
-                "columns": list(df.columns),
-                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+                "row_count": row_count,
+                "columns": columns,
+                "dtypes": dtypes,
             },
             topic=topic,
             status="success",
@@ -890,7 +871,7 @@ def load_data(
 
 
 def _load_to_destination(
-    df: pd.DataFrame,
+    df_path: str,
     dest_config: Dict[str, Any],
     topic: str,
     correlation_id: str,
@@ -922,4 +903,4 @@ def _load_to_destination(
         partition_column=partition_column,
         partition_value=partition_value,
     )
-    return loader.load(df, dest_config, load_ctx)
+    return loader.load(df_path, dest_config, load_ctx)

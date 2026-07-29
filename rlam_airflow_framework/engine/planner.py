@@ -5,7 +5,7 @@ and building an optimized ExecutionPlan.
 """
 
 from dataclasses import dataclass
-from typing import List, Union, Any
+from typing import Union, Any
 
 from rlam_airflow_framework.engine.data import DataBackend
 from rlam_airflow_framework.engine.base import TransformationStep, SourceSpec, DestinationSpec
@@ -31,7 +31,7 @@ class ExecutionPlan:
         
         for stage_idx, step in enumerate(self.steps, start=1):
             if isinstance(step, BackendConversionStep):
-                lines.append(f"\nBoundary:")
+                lines.append("\nBoundary:")
                 lines.append(f"  Target Backend: {step.target_backend.value}")
             elif isinstance(step, DuckDBStage):
                 lines.append(f"\nStage {stage_idx} — DuckDB")

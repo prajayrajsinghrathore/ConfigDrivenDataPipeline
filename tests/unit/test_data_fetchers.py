@@ -8,6 +8,7 @@ has to happen here, at the point the raw exception is still visible.
 """
 
 import socket
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import paramiko
@@ -41,7 +42,7 @@ def test_http_timeout_is_transient(mock_create_session):
     mock_create_session.return_value = mock_session
 
     with pytest.raises(TransientDataFetchError):
-        HttpFetcher().fetch(_http_config())
+        HttpFetcher().fetch(_http_config(), target_path=Path("dummy.parquet"))
 
 
 @patch("rlam_airflow_framework.data_fetchers.http._create_retry_session")
@@ -51,7 +52,7 @@ def test_http_connection_error_is_transient(mock_create_session):
     mock_create_session.return_value = mock_session
 
     with pytest.raises(TransientDataFetchError):
-        HttpFetcher().fetch(_http_config())
+        HttpFetcher().fetch(_http_config(), target_path=Path("dummy.parquet"))
 
 
 @patch("rlam_airflow_framework.data_fetchers.http._create_retry_session")
@@ -64,7 +65,7 @@ def test_http_503_after_adapter_retries_exhausted_is_transient(mock_create_sessi
     mock_create_session.return_value = mock_session
 
     with pytest.raises(TransientDataFetchError):
-        HttpFetcher().fetch(_http_config())
+        HttpFetcher().fetch(_http_config(), target_path=Path("dummy.parquet"))
 
 
 @patch("rlam_airflow_framework.data_fetchers.http._create_retry_session")
@@ -74,7 +75,7 @@ def test_http_404_is_deterministic(mock_create_session):
     mock_create_session.return_value = mock_session
 
     with pytest.raises(DataFetchError) as exc_info:
-        HttpFetcher().fetch(_http_config())
+        HttpFetcher().fetch(_http_config(), target_path=Path("dummy.parquet"))
     assert not isinstance(exc_info.value, TransientDataFetchError)
 
 
@@ -89,7 +90,7 @@ def test_sftp_authentication_failure_is_deterministic(mock_connect):
     mock_connect.side_effect = paramiko.AuthenticationException("bad credentials")
 
     with pytest.raises(DataFetchError) as exc_info:
-        SftpFetcher().fetch(_sftp_config())
+        SftpFetcher().fetch(_sftp_config(), target_path=Path("dummy.parquet"))
     assert not isinstance(exc_info.value, TransientDataFetchError)
 
 
@@ -98,7 +99,7 @@ def test_sftp_ssh_exception_is_transient(mock_connect):
     mock_connect.side_effect = paramiko.SSHException("connection reset")
 
     with pytest.raises(TransientDataFetchError):
-        SftpFetcher().fetch(_sftp_config())
+        SftpFetcher().fetch(_sftp_config(), target_path=Path("dummy.parquet"))
 
 
 @patch("paramiko.SSHClient.connect")
@@ -106,4 +107,4 @@ def test_sftp_socket_timeout_is_transient(mock_connect):
     mock_connect.side_effect = socket.timeout("timed out")
 
     with pytest.raises(TransientDataFetchError):
-        SftpFetcher().fetch(_sftp_config())
+        SftpFetcher().fetch(_sftp_config(), target_path=Path("dummy.parquet"))

@@ -10,7 +10,7 @@ DataFrame filtering, and Variable persistence that were inlined across
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional, Union, cast
 
 import pandas as pd
 import structlog
@@ -177,22 +177,33 @@ class WatermarkManager:
     # Update
     # ------------------------------------------------------------------
 
-    def update(self, df: pd.DataFrame) -> None:
+    def update(self, df_or_path: Union[pd.DataFrame, str]) -> None:
         """
-        Compute ``max(watermark_column)`` from *df* and persist to Airflow
+        Compute ``max(watermark_column)`` from *df_or_path* and persist to Airflow
         Variables.  No-op when incremental loading is disabled, the column
-        is missing, or *df* is empty.
+        is missing, or the input is empty.
         """
         if not self._cfg.enabled or not self._cfg.watermark_column:
             return
-        if df.empty:
-            return
-        if self._cfg.watermark_column not in df.columns:
-            return
+            
+        if isinstance(df_or_path, str):
+            import duckdb
+            try:
+                res = duckdb.execute(f"SELECT MAX({self._cfg.watermark_column}) FROM read_parquet('{df_or_path}')").fetchone()
+                if not res or res[0] is None:
+                    return
+                max_val = res[0]
+            except Exception:
+                return
+        else:
+            if df_or_path.empty:
+                return
+            if self._cfg.watermark_column not in df_or_path.columns:
+                return
+            max_val = df_or_path[self._cfg.watermark_column].max()
 
         from airflow.sdk import Variable
 
-        max_val = df[self._cfg.watermark_column].max()
         new_watermark = (
             max_val.isoformat() if hasattr(max_val, "isoformat") else str(max_val)
         )

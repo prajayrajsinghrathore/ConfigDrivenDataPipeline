@@ -80,7 +80,9 @@ class HttpFetcher(DataFetcher):
 
     def fetch(
         self, config: Dict[str, Any], correlation_id: Optional[str] = None, target_path: Optional[Path] = None
-    ) -> Path | pd.DataFrame:
+    ) -> Path:
+        if not target_path:
+            raise ValueError("target_path is required for out-of-core fetching")
         url = config["endpoint"]
         request_config = config.get("request_config", {}) or {}
         headers = request_config.get("headers")
@@ -126,59 +128,47 @@ class HttpFetcher(DataFetcher):
                 first_chunk = response.raw.read(10)
                 if not first_chunk:
                     log.warning("Empty response received", trace_id=trace_id, url=url)
-                    if target_path:
-                        pd.DataFrame().to_parquet(target_path, index=False)
-                        return target_path
-                    return pd.DataFrame()
+                    pd.DataFrame().to_parquet(target_path, index=False)
+                    return target_path
 
-                if target_path:
-                    # Stream to a temp file first
-                    temp_fd, temp_raw_path = tempfile.mkstemp(suffix=f".{format}")
-                    os.close(temp_fd)
-                    try:
-                        with open(temp_raw_path, "wb") as f:
-                            f.write(first_chunk)
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    
-                        elapsed_time = time.time() - start_time
-                        file_size_mb = os.path.getsize(temp_raw_path) / 1024 / 1024
-                        log.info(
-                            "HTTP streaming complete",
-                            trace_id=trace_id,
-                            status=response.status_code,
-                            elapsed_seconds=round(elapsed_time, 2),
-                            content_length_mb=round(file_size_mb, 2),
-                        )
+                # Stream to a temp file first
+                temp_fd, temp_raw_path = tempfile.mkstemp(suffix=f".{format}")
+                os.close(temp_fd)
+                try:
+                    with open(temp_raw_path, "wb") as f:
+                        f.write(first_chunk)
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
 
-                        if format in ("json", "csv"):
-                            read_func = "read_json_auto" if format == "json" else "read_csv_auto"
-                            # DuckDB converts the file to parquet in chunks, keeping RAM flat
-                            duckdb.query(f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)")
-                            log.info("Converted streamed data to Parquet via DuckDB", trace_id=trace_id)
-                        else:
-                            # Fallback for XML
-                            with open(temp_raw_path, "r", encoding="utf-8") as f:
-                                content = f.read()
-                            df = parse_content(content, format, trace_id)
-                            df.to_parquet(target_path, index=False, compression="snappy")
-                            log.info("Converted streamed data to Parquet via Pandas fallback", trace_id=trace_id)
-
-                        return target_path
-
-                    finally:
-                        if os.path.exists(temp_raw_path):
-                            os.remove(temp_raw_path)
-                else:
-                    # Legacy fallback if no target path is provided
-                    content_bytes = first_chunk + response.content
-                    df = parse_content(content_bytes.decode("utf-8"), format, trace_id)
                     elapsed_time = time.time() - start_time
+                    file_size_mb = os.path.getsize(temp_raw_path) / 1024 / 1024
                     log.info(
-                        "Successfully parsed HTTP response", trace_id=trace_id, rows=len(df), elapsed_seconds=round(elapsed_time, 2)
+                        "HTTP streaming complete",
+                        trace_id=trace_id,
+                        status=response.status_code,
+                        elapsed_seconds=round(elapsed_time, 2),
+                        content_length_mb=round(file_size_mb, 2),
                     )
-                    return df
+
+                    if format in ("json", "csv"):
+                        read_func = "read_json_auto" if format == "json" else "read_csv_auto"
+                        # DuckDB converts the file to parquet in chunks, keeping RAM flat
+                        duckdb.query(f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)")
+                        log.info("Converted streamed data to Parquet via DuckDB", trace_id=trace_id)
+                    else:
+                        # Fallback for XML
+                        with open(temp_raw_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        df = parse_content(content, format, trace_id)
+                        df.to_parquet(target_path, index=False, compression="snappy")
+                        log.info("Converted streamed data to Parquet via Pandas fallback", trace_id=trace_id)
+
+                    return target_path
+
+                finally:
+                    if os.path.exists(temp_raw_path):
+                        os.remove(temp_raw_path)
 
         except requests.exceptions.Timeout as e:
             log.error(

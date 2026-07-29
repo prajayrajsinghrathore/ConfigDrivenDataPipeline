@@ -3,7 +3,7 @@
 Federated Snowflake Lookup transformer for DuckDB.
 """
 
-from typing import cast, Any
+from typing import cast
 import duckdb
 from pathlib import Path
 import tempfile

@@ -11,9 +11,7 @@ abstraction, not on a specific transport.
 import os
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
-from typing import Optional, Dict, Any
 from pathlib import Path
-import pandas as pd
 from rlam_airflow_framework.utils.retry_policy import TransientError
 
 # =============================================================================
@@ -52,7 +50,7 @@ class DataFetcher(ABC):
         config: Dict[str, Any], 
         correlation_id: Optional[str] = None,
         target_path: Optional[Path] = None
-    ) -> Path | pd.DataFrame:
+    ) -> Path:
         """
         Fetch and parse data described by a ``data_source`` config dict.
 

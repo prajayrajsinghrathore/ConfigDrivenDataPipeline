@@ -8,7 +8,7 @@ import duckdb
 import polars as pl
 
 from rlam_airflow_framework.engine.base import TransformationStep
-from rlam_airflow_framework.engine.data import DataBackend, ExecutionData, DuckDBData, PolarsLazyData
+from rlam_airflow_framework.engine.data import DataBackend, ExecutionData, DuckDBData
 from rlam_airflow_framework.engine.config import FormulaStepConfig
 from rlam_airflow_framework.engine.context import ExecutionContext
 

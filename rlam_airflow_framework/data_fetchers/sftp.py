@@ -7,11 +7,9 @@ session, with host-key verification and configurable timeouts.
 import os
 import socket
 import time
-from io import BytesIO
 from typing import Optional, Dict, Any
 from pathlib import Path
 import paramiko
-import pandas as pd
 import duckdb  # type: ignore
 import structlog
 
@@ -106,7 +104,9 @@ class SftpFetcher(DataFetcher):
 
     def fetch(
         self, config: Dict[str, Any], correlation_id: Optional[str] = None, target_path: Optional[Path] = None
-    ) -> Path | pd.DataFrame:
+    ) -> Path:
+        if not target_path:
+            raise ValueError("target_path is required for out-of-core fetching")
         sftp_conn_id = config["connection_id"]
         remote_path = config["remote_path"]
         file_format = config.get("file_format", "csv")
@@ -235,21 +235,6 @@ class SftpFetcher(DataFetcher):
                 finally:
                     if os.path.exists(temp_raw_path):
                         os.remove(temp_raw_path)
-            else:
-                # Download file to memory
-                file_obj = BytesIO()
-                sftp.getfo(remote_path, file_obj)
-                file_obj.seek(0)
-    
-                download_time = time.time() - start_time - connect_time
-                log.info(f"File downloaded in {download_time:.2f}s")
-    
-                # Parse based on format
-                content = file_obj.getvalue().decode("utf-8")
-                df = parse_content(content, file_format, trace_id)
-    
-                log.info(f"Successfully parsed {len(df)} rows from SFTP file")
-                return df
 
         except paramiko.AuthenticationException as e:
             log.error(f"SFTP authentication failed: {e}")

@@ -4,7 +4,6 @@
 import os
 import tempfile
 import time
-from typing import cast
 
 import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
@@ -26,7 +25,7 @@ class SnowflakeStageLoader(DestinationLoader):
 
     dest_type = "snowflake_stage"
 
-    def _write(self, df, dest_config, ctx):
+    def _write(self, df_path: str, dest_config, ctx):
         stage_name = validate_identifier(
             dest_config.get("stage_name", "DATA_STAGE"), "stage name"
         )
@@ -39,34 +38,36 @@ class SnowflakeStageLoader(DestinationLoader):
         snowflake_conn_id = dest_config.get("connection_id", "snowflake-default")
         logger = _log.bind(trace_id=ctx.correlation_id)
 
+        import duckdb
+        try:
+            res = duckdb.query(f"SELECT count(*) FROM '{df_path}'").fetchone()
+            row_count = res[0] if res else 0
+        except Exception:
+            row_count = 0
+
         logger.info(
             f"Starting Snowflake stage load: stage={stage_name}, "
-            f"file={file_name}, format={file_format}, rows={len(df)}"
+            f"file={file_name}, format={file_format}, rows={row_count}"
         )
 
         hook = SnowflakeHook(snowflake_conn_id=snowflake_conn_id)
-
-        # These no-path serializations return str (never None); the pandas
-        # stubs type them as Optional, so cast to satisfy tmp_file.write.
-        if file_format == "csv":
-            data = cast(str, df.to_csv(index=False))
-        elif file_format == "json":
-            data = cast(str, df.to_json(orient="records"))
-        else:
-            raise ValueError(f"Unsupported format: {file_format}. Supported: csv, json")
 
         base_name, ext = os.path.splitext(file_name)
         if not ext:
             ext = f".{file_format}"
         run_scoped_file_name = f"{base_name}_{run_token}{ext}"
-
-        tmp_file_path = os.path.join(tempfile.gettempdir(), run_scoped_file_name)
+        
+        needs_cleanup = False
+        if file_format == "parquet":
+            tmp_file_path = df_path
+        else:
+            tmp_file_path = os.path.join(tempfile.gettempdir(), run_scoped_file_name)
+            duckdb_format = "CSV" if file_format == "csv" else "JSON"
+            duckdb.query(f"COPY (SELECT * FROM '{df_path}') TO '{tmp_file_path}' (FORMAT {duckdb_format})")
+            needs_cleanup = True
 
         try:
             start_time = time.time()
-
-            with open(tmp_file_path, "w", encoding="utf-8") as tmp_file:
-                tmp_file.write(data)
 
             stage_full_path = f"@{stage_name}"
             # file path is a local system path, not user input
@@ -96,7 +97,7 @@ class SnowflakeStageLoader(DestinationLoader):
                 original_error=e,
             ) from e
         finally:
-            if os.path.exists(tmp_file_path):
+            if needs_cleanup and os.path.exists(tmp_file_path):
                 try:
                     os.unlink(tmp_file_path)
                 except Exception as e:

@@ -2,7 +2,6 @@ import pytest
 import pyarrow as pa
 import polars as pl
 import duckdb
-import sys
 import tempfile
 import builtins
 from pathlib import Path
@@ -11,7 +10,7 @@ from unittest.mock import patch, MagicMock
 from rlam_airflow_framework.engine.data import DuckDBData
 from rlam_airflow_framework.engine.context import ExecutionContext
 from rlam_airflow_framework.engine.config import SnowflakeLookupConfig
-from rlam_airflow_framework.engine.transformers.snowflake_lookup import DuckDBSnowflakeLookupStep, SnowflakeLookupProvider
+from rlam_airflow_framework.engine.transformers.snowflake_lookup import DuckDBSnowflakeLookupStep
 
 def _dummy_context():
     return ExecutionContext(
@@ -50,7 +49,7 @@ class TestSnowflakeLookupRobustness:
         Ensures the execution path does not dynamically import pandas.
         Since tests might load pandas globally, we mock builtins.__import__ to trap it.
         """
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         rel = duckdb.sql("SELECT * FROM df")
         data = DuckDBData(rel)
         step = DuckDBSnowflakeLookupStep()
@@ -70,7 +69,7 @@ class TestSnowflakeLookupRobustness:
 
     def test_empty_snowflake_result(self, mock_snowflake_hook):
         mock_snowflake_hook.fetch_arrow_batches.return_value = []
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         rel = duckdb.sql("SELECT * FROM df")
         step = DuckDBSnowflakeLookupStep()
         
@@ -91,7 +90,7 @@ class TestSnowflakeLookupRobustness:
         ]
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
         
-        df = pl.DataFrame({"instrument_id": ["INS001", "INS002", "INS003"]})
+        df = pl.DataFrame({"instrument_id": ["INS001", "INS002", "INS003"]})  # noqa: F841 (used via duckdb frame introspection)
         rel = duckdb.sql("SELECT * FROM df")
         step = DuckDBSnowflakeLookupStep()
         
@@ -104,7 +103,7 @@ class TestSnowflakeLookupRobustness:
 
     def test_timestamp_precision_argument(self, mock_snowflake_hook):
         mock_snowflake_hook.fetch_arrow_batches.return_value = []
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -114,7 +113,7 @@ class TestSnowflakeLookupRobustness:
 
     def test_null_lookup_keys(self, mock_snowflake_hook):
         mock_snowflake_hook.fetch_arrow_batches.return_value = []
-        df = pl.DataFrame({"instrument_id": [None, "INS001", None]})
+        df = pl.DataFrame({"instrument_id": [None, "INS001", None]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -128,7 +127,7 @@ class TestSnowflakeLookupRobustness:
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
         
         # Left side has duplicates
-        df = pl.DataFrame({"instrument_id": ["INS001", "INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001", "INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -142,7 +141,7 @@ class TestSnowflakeLookupRobustness:
         batches = [pa.Table.from_pydict({"INSTRUMENT_ID": ["INS001"], "ISIN": ["US1"], "INSTRUMENT_NAME": ["N1"]})]
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
         
-        df = pl.DataFrame({"instrument_id": ["INS001", "INS002"]}) # INS002 is unmatched
+        df = pl.DataFrame({"instrument_id": ["INS001", "INS002"]}) # INS002 is unmatched  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -160,7 +159,7 @@ class TestSnowflakeLookupRobustness:
         ]
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
         
-        df = pl.DataFrame({"instrument_id": ["INS001", "INS002"]})
+        df = pl.DataFrame({"instrument_id": ["INS001", "INS002"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -177,7 +176,6 @@ class TestSnowflakeLookupRobustness:
     @patch("tempfile.TemporaryDirectory")
     def test_special_characters_in_scratch_paths(self, mock_temp_dir, mock_snowflake_hook):
         import shutil
-        import os
         
         weird_dir = Path(tempfile.gettempdir()) / "a b c #! ñ"
         weird_dir.mkdir(parents=True, exist_ok=True)
@@ -186,7 +184,7 @@ class TestSnowflakeLookupRobustness:
         mock_snowflake_hook.fetch_arrow_batches.return_value = []
         
         try:
-            df = pl.DataFrame({"instrument_id": ["INS001"]})
+            df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
             step = DuckDBSnowflakeLookupStep()
             
             result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -199,7 +197,7 @@ class TestSnowflakeLookupRobustness:
     def test_cleanup_after_an_exception(self, mock_snowflake_hook):
         # We ensure that if an exception is raised in SnowflakeLookupProvider, the temp_dir is still garbage collected
         mock_snowflake_hook.fetch_arrow_batches.side_effect = Exception("Snowflake network error")
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         with patch("tempfile.TemporaryDirectory") as mock_temp:
@@ -215,7 +213,7 @@ class TestSnowflakeLookupRobustness:
 
     def test_scratch_lifetime_after_multiple_transformations(self, mock_snowflake_hook):
         mock_snowflake_hook.fetch_arrow_batches.return_value = []
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         data1 = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())
@@ -238,7 +236,7 @@ class TestSnowflakeLookupRobustness:
         batches = [pa.Table.from_pydict({"INSTRUMENT_ID": ["INS001"], "ISIN": ["US1"], "INSTRUMENT_NAME": ["N1"]})]
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
         
-        df = pl.DataFrame({"instrument_id": ["INS001"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         with patch("pyarrow.parquet.write_table", side_effect=OSError("No space left on device")):
@@ -247,7 +245,7 @@ class TestSnowflakeLookupRobustness:
 
     def test_column_name_collisions(self, mock_snowflake_hook):
         # Left side has ISIN already!
-        df = pl.DataFrame({"instrument_id": ["INS001"], "ISIN": ["OLD_US1"]})
+        df = pl.DataFrame({"instrument_id": ["INS001"], "ISIN": ["OLD_US1"]})  # noqa: F841 (used via duckdb frame introspection)
         
         batches = [pa.Table.from_pydict({"INSTRUMENT_ID": ["INS001"], "ISIN": ["NEW_US1"], "INSTRUMENT_NAME": ["N1"]})]
         mock_snowflake_hook.fetch_arrow_batches.return_value = iter(batches)
@@ -278,7 +276,7 @@ class TestSnowflakeLookupRobustness:
         
         mock_snowflake_hook.fetch_arrow_batches.return_value = batch_generator()
         
-        df = pl.DataFrame({"instrument_id": [f"INS{i:03d}" for i in range(100)]})
+        df = pl.DataFrame({"instrument_id": [f"INS{i:03d}" for i in range(100)]})  # noqa: F841 (used via duckdb frame introspection)
         step = DuckDBSnowflakeLookupStep()
         
         result = step.transform(DuckDBData(duckdb.sql("SELECT * FROM df")), _config(), _dummy_context())

@@ -107,21 +107,23 @@ class TestDataQualityCheckerRunChecks:
         return DataQualityChecker(config, "test_dag", "test_task")
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_run_checks_empty_dataframe(self, mock_kafka):
+    def test_run_checks_empty_dataframe(self, mock_kafka, tmp_path):
         """Test run_checks with empty DataFrame returns early."""
         config = {"data_source": {"name": "test"}, "validation": {}}
         checker = DataQualityChecker(config, "dag", "task")
 
-        empty_df = pd.DataFrame()
-        valid_df, invalid_df, results = checker.run_checks(empty_df)
+        empty_df = pd.DataFrame(columns=["id", "name"])
+        df_path = str(tmp_path / "empty.parquet")
+        empty_df.to_parquet(df_path)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         assert results["status"] == "skipped"
         assert results["total_rows"] == 0
-        assert valid_df.empty
-        assert invalid_df.empty
+        assert valid_path == ""
+        assert invalid_path == ""
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_run_checks_no_soda_config_uses_legacy(self, mock_kafka, sample_df):
+    def test_run_checks_no_soda_config_uses_legacy(self, mock_kafka, sample_df, tmp_path):
         """Test run_checks falls back to legacy validation when no soda_checks."""
         config = {
             "data_source": {"name": "test"},
@@ -132,12 +134,14 @@ class TestDataQualityCheckerRunChecks:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(sample_df)
+        df_path = str(tmp_path / "sample.parquet")
+        sample_df.to_parquet(df_path)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         # Should have processed legacy validation rules
         assert results["total_rows"] == 5
         # Price -5.0 is out of range, should fail
-        assert len(invalid_df) > 0 or results["failed"] > 0
+        assert results["failed"] > 0
 
 
 class TestDataQualityCheckerBasicChecks:
@@ -662,9 +666,11 @@ class TestRunDataQualityChecksConvenience:
     """Test run_data_quality_checks() convenience function."""
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_run_data_quality_checks(self, mock_kafka):
+    def test_run_data_quality_checks(self, mock_kafka, tmp_path):
         """Test convenience function creates checker and runs checks."""
         df = pd.DataFrame({"id": [1, 2, 3], "name": ["A", "B", "C"]})
+        df_path = str(tmp_path / "data.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {
@@ -673,7 +679,7 @@ class TestRunDataQualityChecksConvenience:
         }
 
         valid_df, invalid_df, results = run_data_quality_checks(
-            df=df,
+            df_path=df_path,
             config=config,
             dag_id="test_dag",
             task_id="test_task",
@@ -688,13 +694,15 @@ class TestDataQualityCheckerLegacyValidation:
     """Test legacy validation rules processing."""
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_legacy_numeric_range_validation(self, mock_kafka):
+    def test_legacy_numeric_range_validation(self, mock_kafka, tmp_path):
         """Test legacy numeric range validation."""
         df = pd.DataFrame(
             {
                 "price": [10, 50, 150, 200],  # 150 and 200 are out of range
             }
         )
+        df_path = str(tmp_path / "prices.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {},
@@ -704,19 +712,25 @@ class TestDataQualityCheckerLegacyValidation:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
-        assert len(invalid_df) == 2  # 150 and 200
-        assert len(valid_df) == 2  # 10 and 50
+        # Legacy engine does not persist a separate quarantine file; it only
+        # reports the split via results, and returns the original path as valid.
+        assert results["invalid_rows"] == 2  # 150 and 200
+        assert results["valid_rows"] == 2  # 10 and 50
+        assert invalid_path == ""
+        assert valid_path == df_path
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_legacy_string_max_length_validation(self, mock_kafka):
+    def test_legacy_string_max_length_validation(self, mock_kafka, tmp_path):
         """Test legacy string max_length validation."""
         df = pd.DataFrame(
             {
                 "name": ["Alice", "Bob", "Christopher"],  # Christopher exceeds 5
             }
         )
+        df_path = str(tmp_path / "names.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {},
@@ -726,19 +740,23 @@ class TestDataQualityCheckerLegacyValidation:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
-        assert len(invalid_df) == 1  # Christopher
-        assert len(valid_df) == 2
+        assert results["invalid_rows"] == 1  # Christopher
+        assert results["valid_rows"] == 2
+        assert invalid_path == ""
+        assert valid_path == df_path
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_legacy_missing_required_field(self, mock_kafka):
+    def test_legacy_missing_required_field(self, mock_kafka, tmp_path):
         """Test legacy validation with missing required field."""
         df = pd.DataFrame(
             {
                 "name": ["Alice", "Bob"],
             }
         )
+        df_path = str(tmp_path / "names.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {},
@@ -748,15 +766,17 @@ class TestDataQualityCheckerLegacyValidation:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         # Should have a failed check for missing required field
         assert results["failed"] >= 1
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_legacy_no_validation_rules_skipped(self, mock_kafka):
+    def test_legacy_no_validation_rules_skipped(self, mock_kafka, tmp_path):
         """Test legacy validation skips when no rules defined."""
         df = pd.DataFrame({"id": [1, 2, 3]})
+        df_path = str(tmp_path / "ids.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {},
@@ -764,7 +784,7 @@ class TestDataQualityCheckerLegacyValidation:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         assert results["status"] == "skipped"
 
@@ -773,13 +793,15 @@ class TestDataQualityCheckerEdgeCases:
     """Test edge cases and error handling."""
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_unicode_data_handling(self, mock_kafka):
+    def test_unicode_data_handling(self, mock_kafka, tmp_path):
         """Test handling of Unicode characters in data."""
         df = pd.DataFrame(
             {
                 "name": ["日本語", "العربية", "עברית", "中文"],
             }
         )
+        df_path = str(tmp_path / "unicode.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {
@@ -788,13 +810,14 @@ class TestDataQualityCheckerEdgeCases:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         assert results["total_rows"] == 4
-        assert len(valid_df) == 4
+        assert results["valid_rows"] == 4
+        assert valid_path == df_path
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_null_heavy_dataframe(self, mock_kafka):
+    def test_null_heavy_dataframe(self, mock_kafka, tmp_path):
         """Test DataFrame with many null values."""
         df = pd.DataFrame(
             {
@@ -802,6 +825,8 @@ class TestDataQualityCheckerEdgeCases:
                 "name": [None, None, "Charlie", None, None],
             }
         )
+        df_path = str(tmp_path / "nulls.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {
@@ -814,15 +839,14 @@ class TestDataQualityCheckerEdgeCases:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         # Verify the check was executed and results returned
         assert results["total_rows"] == 5
-        # The check should be in the results (may pass or fail depending on soda availability)
-        assert "checks" in results
+        assert results["status"] in ("passed", "failed", "warning")
 
     @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
-    def test_special_characters_in_column_names(self, mock_kafka):
+    def test_special_characters_in_column_names(self, mock_kafka, tmp_path):
         """Test handling columns with special characters."""
         df = pd.DataFrame(
             {
@@ -830,6 +854,8 @@ class TestDataQualityCheckerEdgeCases:
                 "column-with-dashes": [4, 5, 6],
             }
         )
+        df_path = str(tmp_path / "special_cols.parquet")
+        df.to_parquet(df_path)
         config = {
             "data_source": {"name": "test"},
             "validation": {
@@ -838,7 +864,7 @@ class TestDataQualityCheckerEdgeCases:
         }
         checker = DataQualityChecker(config, "dag", "task")
 
-        valid_df, invalid_df, results = checker.run_checks(df)
+        valid_path, invalid_path, results = checker.run_checks(df_path)
 
         assert results["total_rows"] == 3
 
@@ -1054,7 +1080,7 @@ class TestCreateHitlQuarantineApprovalTask:
 
     def test_handles_empty_quarantine_records(self, hitl_config):
         """Test handles empty DataFrame gracefully."""
-        empty_df = pd.DataFrame()
+        empty_df = pd.DataFrame(columns=["id", "name"])
 
         result = create_hitl_quarantine_approval_task(
             dag_id="test_dag", quarantine_records=empty_df, config=hitl_config

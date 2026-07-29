@@ -50,8 +50,8 @@ kafka = [
     "kafka-python>=2.3.0",
 ]
 quality = [
-    # soda-core commented out due to Python 3.12 incompatibility
-    # "soda-core>=3.2.0",
+    "soda-core>=4.0.0",
+    "soda-duckdb>=4.0.0",
 ]
 ssh = [
     "apache-airflow-providers-ssh>=3.15.0",
@@ -85,10 +85,8 @@ packages = [
     "rlam_airflow_framework.destinations",
     "rlam_airflow_framework.data_quality",
     "rlam_airflow_framework.data_fetchers",
-    "rlam_airflow_framework.transformers",
-    "rlam_airflow_framework.transformers.enrichments",
-    "rlam_airflow_framework.formula_engine",
-    "rlam_airflow_framework.formula_engine.evaluators",
+    "rlam_airflow_framework.engine",
+    "rlam_airflow_framework.engine.transformers",
 ]
 
 [tool.setuptools.package-data]

@@ -86,7 +86,14 @@ class TestIngestDataRestApi:
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
         mock_fetcher = mock_get_fetcher.return_value
-        mock_fetcher.fetch.return_value = test_data
+        def mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            test_data.to_parquet(target_path, index=False)
+            return target_path
+        mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -129,7 +136,14 @@ class TestIngestDataRestApi:
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
         mock_fetcher = mock_get_fetcher.return_value
-        mock_fetcher.fetch.return_value = test_data
+        def mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            test_data.to_parquet(target_path, index=False)
+            return target_path
+        mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -159,7 +173,14 @@ class TestIngestDataRestApi:
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"data": [1, 2, 3]})
         mock_fetcher = mock_get_fetcher.return_value
-        mock_fetcher.fetch.return_value = test_data
+        def mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            test_data.to_parquet(target_path, index=False)
+            return target_path
+        mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -185,7 +206,15 @@ class TestIngestDataRestApi:
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame()
+        def mock_fetch_empty(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            pd.DataFrame().to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = mock_fetch_empty
 
         # Execute
         result = ingest_data(rest_api_config)
@@ -219,7 +248,14 @@ class TestIngestDataSftp:
         mock_context.return_value = mock_airflow_context
         test_data = pd.DataFrame({"name": ["Alice", "Bob"], "age": [25, 30]})
         mock_fetcher = mock_get_fetcher.return_value
-        mock_fetcher.fetch.return_value = test_data
+        def mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            test_data.to_parquet(target_path, index=False)
+            return target_path
+        mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
         result = ingest_data(sftp_config)
@@ -261,9 +297,18 @@ class TestIncrementalWatermarkFiltering:
         }
 
         mock_context.return_value = mock_airflow_context
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
+        def _mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+            df = pd.DataFrame(
             {"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"]}
         )
+            df.to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         sdk_mock = cast(Any, sys.modules["airflow.sdk"])
         original_variable = sdk_mock.Variable
@@ -367,7 +412,16 @@ class TestConfigValidation:
         }
 
         mock_context.return_value = mock_airflow_context
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame({"test": [1]})
+        def _mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+            df = pd.DataFrame({"test": [1]})
+            df.to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         ingest_data(config)
 
@@ -385,7 +439,16 @@ class TestConfigValidation:
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         mock_context.return_value = mock_airflow_context
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame({"data": [1]})
+        def _mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+            df = pd.DataFrame({"data": [1]})
+            df.to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         ingest_data(rest_api_config)
 
@@ -424,9 +487,16 @@ class TestConfigValidation:
         }
         
         with patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher") as mock_get_fetcher:
-            import pandas as pd
-            df = pd.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
-            mock_get_fetcher.return_value.fetch.return_value = df
+            def _mock_fetch(config, target_path=None, **kwargs):
+                import tempfile
+                import os
+                import pandas as pd
+                if target_path is None:
+                    target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+                df = pd.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
+                df.to_parquet(target_path, index=False)
+                return target_path
+            mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
             from rlam_airflow_framework.taskflow_tasks import ingest_data
             ingest_data(config)
@@ -575,9 +645,18 @@ class TestWatermarkSafetyAndPartitionEvents:
             "run_id": "test_run_123",
         }
         mock_variable.get.return_value = None
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
+        def _mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+            df = pd.DataFrame(
             {"id": [1, 2], "v": ["a", "b"]}
         )
+            df.to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         config = {
             "data_source": {
@@ -615,9 +694,18 @@ class TestWatermarkSafetyAndPartitionEvents:
             "partition_key": "2026-07-22",
             "partition_date": None,
         }
-        mock_get_fetcher.return_value.fetch.return_value = pd.DataFrame(
+        def _mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import pandas as pd
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
+            df = pd.DataFrame(
             {"id": [1], "event_date": ["2026-07-22"]}
         )
+            df.to_parquet(target_path, index=False)
+            return target_path
+        mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         config = {
             "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/data"},

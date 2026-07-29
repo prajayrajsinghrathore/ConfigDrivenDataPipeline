@@ -10,7 +10,6 @@ from rlam_airflow_framework.engine.data import (
     DuckDBData,
     PolarsLazyData,
     PolarsEagerData,
-    ArrowData,
 )
 from rlam_airflow_framework.engine.context import ExecutionContext
 
