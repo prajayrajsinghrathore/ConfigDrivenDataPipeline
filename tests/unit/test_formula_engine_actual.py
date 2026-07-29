@@ -16,14 +16,18 @@ import pytest
 import pandas as pd
 from datetime import datetime, date
 
-# Import actual implementation
 from rlam_airflow_framework.formula_engine import (
     FormulaEngine,
     FormulaError,
     get_formula_engine,
+)
+from rlam_airflow_framework.formula_engine.parser import convert_legacy_formula
+from rlam_airflow_framework.formula_engine.functions import (
     _date_diff,
     _case_when,
     _to_date,
+)
+from rlam_airflow_framework.formula_engine.evaluators.simpleeval_engine import (
     SIMPLEEVAL_AVAILABLE,
 )
 
@@ -433,6 +437,7 @@ class TestToDateFunction:
     def test_to_date_with_format(self):
         """Test _to_date parses with custom format."""
         result = _to_date("15/05/2026", "%d/%m/%Y")
+        assert result is not None
         assert result.year == 2026
         assert result.month == 5
         assert result.day == 15
@@ -440,6 +445,7 @@ class TestToDateFunction:
     def test_to_date_without_format(self):
         """Test _to_date parses standard format."""
         result = _to_date("2026-05-15")
+        assert result is not None
         assert result.year == 2026
 
     def test_to_date_with_none(self):
@@ -558,56 +564,60 @@ class TestFormulaEngineLegacyConversion:
         return FormulaEngine()
 
     def test_convert_pandas_str_upper(self, engine):
-        """Test conversion of pandas .str.upper() syntax."""
-        converted = engine._convert_legacy_formula("name.str.upper()")
+        formula = "name.str.upper()"
+        converted = convert_legacy_formula(formula)
         assert converted == "upper(name)"
 
     def test_convert_pandas_str_lower(self, engine):
-        """Test conversion of pandas .str.lower() syntax."""
-        converted = engine._convert_legacy_formula("name.str.lower()")
+        formula = "name.str.lower()"
+        converted = convert_legacy_formula(formula)
         assert converted == "lower(name)"
 
     def test_convert_pandas_str_strip(self, engine):
-        """Test conversion of pandas .str.strip() syntax."""
-        converted = engine._convert_legacy_formula("name.str.strip()")
+        formula = "name.str.strip()"
+        converted = convert_legacy_formula(formula)
         assert converted == "strip(name)"
 
     def test_convert_pandas_dt_year(self, engine):
-        """Test conversion of pandas .dt.year syntax."""
-        converted = engine._convert_legacy_formula("date_col.dt.year")
-        assert converted == "year(date_col)"
+        formula = "date.dt.year"
+        converted = convert_legacy_formula(formula)
+        assert converted == "year(date)"
 
     def test_convert_pandas_dt_month(self, engine):
-        """Test conversion of pandas .dt.month syntax."""
-        converted = engine._convert_legacy_formula("date_col.dt.month")
-        assert converted == "month(date_col)"
+        formula = "date.dt.month"
+        converted = convert_legacy_formula(formula)
+        assert converted == "month(date)"
 
     def test_convert_pandas_dt_day(self, engine):
-        """Test conversion of pandas .dt.day syntax."""
-        converted = engine._convert_legacy_formula("date_col.dt.day")
-        assert converted == "day(date_col)"
+        formula = "date.dt.day"
+        converted = convert_legacy_formula(formula)
+        assert converted == "day(date)"
 
     def test_convert_pd_timestamp_now(self, engine):
-        """Test conversion of pd.Timestamp.now() syntax."""
-        converted = engine._convert_legacy_formula("pd.Timestamp.now()")
+        formula = "pd.Timestamp.now()"
+        converted = convert_legacy_formula(formula)
         assert converted == "now()"
 
+        formula2 = "pd.Timestamp.today()"
+        converted2 = convert_legacy_formula(formula2)
+        assert converted2 == "today()"
+
     def test_convert_datetime_now(self, engine):
-        """Test conversion of datetime.now() syntax."""
-        converted = engine._convert_legacy_formula("datetime.now()")
+        formula = "datetime.now()"
+        converted = convert_legacy_formula(formula)
         assert converted == "now()"
 
     def test_convert_np_where(self, engine):
-        """Test conversion of np.where() syntax."""
-        converted = engine._convert_legacy_formula(
-            "np.where(condition, true_val, false_val)"
+        formula = "np.where(age > 18, 'adult', 'child')"
+        converted = convert_legacy_formula(
+            formula
         )
-        assert converted == "if_else(condition, true_val, false_val)"
+        assert converted == "if_else(age > 18, 'adult', 'child')"
 
     def test_no_conversion_for_normal_formula(self, engine):
         """Test that normal formulas are not modified."""
-        formula = "price * quantity"
-        converted = engine._convert_legacy_formula(formula)
+        formula = "a + b"
+        converted = convert_legacy_formula(formula)
         assert converted == formula
 
 
@@ -696,73 +706,66 @@ class TestFormulaEngineAvailableFunctions:
 class TestFormulaEngineFallbackEvaluation:
     """Test fallback evaluation when simpleeval is not available."""
 
-    def test_fallback_basic_arithmetic(self):
-        """Test fallback handles basic arithmetic."""
-        engine = FormulaEngine()
-        # Directly test fallback method
-        result = engine._fallback_evaluate(
-            "price * quantity", {"price": 10, "quantity": 5}
-        )
-        assert result == 50.0
+    @pytest.fixture
+    def engine(self):
+        """Create a fresh FormulaEngine instance."""
+        return FormulaEngine()
 
-    def test_fallback_addition(self):
-        """Test fallback handles addition."""
-        engine = FormulaEngine()
-        result = engine._fallback_evaluate("a + b", {"a": 10, "b": 20})
+    def test_fallback_basic_arithmetic(self, engine):
+        """Test basic fallback arithmetic evaluation."""
+        result = engine._fallback_engine.evaluate(
+            "price * quantity", {"price": 10.5, "quantity": 2}
+        )
+        assert result == 21.0
+
+    def test_fallback_addition(self, engine):
+        """Test fallback addition."""
+        result = engine._fallback_engine.evaluate("a + b", {"a": 10, "b": 20})
         assert result == 30.0
 
-    def test_fallback_subtraction(self):
-        """Test fallback handles subtraction."""
-        engine = FormulaEngine()
-        result = engine._fallback_evaluate("a - b", {"a": 30, "b": 10})
+    def test_fallback_subtraction(self, engine):
+        """Test fallback subtraction."""
+        result = engine._fallback_engine.evaluate("a - b", {"a": 30, "b": 10})
         assert result == 20.0
 
-    def test_fallback_division(self):
-        """Test fallback handles division."""
-        engine = FormulaEngine()
-        result = engine._fallback_evaluate("a / b", {"a": 20, "b": 4})
+    def test_fallback_division(self, engine):
+        """Test fallback division."""
+        result = engine._fallback_engine.evaluate("a / b", {"a": 20, "b": 4})
         assert result == 5.0
 
-    def test_fallback_function_call(self):
-        """Test fallback handles function calls."""
-        engine = FormulaEngine()
-        result = engine._fallback_evaluate("upper(name)", {"name": "hello"})
+    def test_fallback_function_call(self, engine):
+        """Test fallback function execution."""
+        result = engine._fallback_engine.evaluate("upper(name)", {"name": "hello"})
         assert result == "HELLO"
 
-    def test_fallback_resolve_string_literal(self):
-        """Test fallback resolves string literals."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("'hello'", {})
+    def test_fallback_resolve_string_literal(self, engine):
+        """Test resolving string literal."""
+        result = engine._fallback_engine._resolve_value("'hello'", {})
         assert result == "hello"
 
-    def test_fallback_resolve_number(self):
-        """Test fallback resolves numbers."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("123", {})
+    def test_fallback_resolve_number(self, engine):
+        """Test resolving integer."""
+        result = engine._fallback_engine._resolve_value("123", {})
         assert result == 123
 
-    def test_fallback_resolve_float(self):
-        """Test fallback resolves floats."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("123.45", {})
+    def test_fallback_resolve_float(self, engine):
+        """Test resolving float."""
+        result = engine._fallback_engine._resolve_value("123.45", {})
         assert result == 123.45
 
-    def test_fallback_resolve_boolean_true(self):
-        """Test fallback resolves True."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("True", {})
+    def test_fallback_resolve_boolean_true(self, engine):
+        """Test resolving True."""
+        result = engine._fallback_engine._resolve_value("True", {})
         assert result is True
 
-    def test_fallback_resolve_boolean_false(self):
-        """Test fallback resolves False."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("False", {})
+    def test_fallback_resolve_boolean_false(self, engine):
+        """Test resolving False."""
+        result = engine._fallback_engine._resolve_value("False", {})
         assert result is False
 
-    def test_fallback_resolve_none(self):
-        """Test fallback resolves None."""
-        engine = FormulaEngine()
-        result = engine._resolve_value("None", {})
+    def test_fallback_resolve_none(self, engine):
+        """Test resolving None."""
+        result = engine._fallback_engine._resolve_value("None", {})
         assert result is None
 
 

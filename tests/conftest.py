@@ -14,6 +14,17 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 # No need to add dags/ since we're using the installed rlam_airflow_framework package
 
+# NOTE (2026-07-23): the former `clean_sys_modules_for_non_unit_tests` autouse
+# fixture (a per-test sys.modules save/delete/restore dance) was removed. It
+# corrupted per-class registries (PyYAML constructors used by
+# airflow.configuration) whenever real Airflow ran in the same process. Lanes
+# with incompatible airflow.* expectations now run in separate pytest
+# invocations instead:
+#   pytest tests/unit tests/contract -q   # mocked lane
+#   pytest tests/dag -q                   # real-Airflow lane
+#   pytest tests/integration tests/e2e -q # real lane vs live stack
+# tests/dag/conftest.py skips its lane loudly if unit mocks are detected.
+
 # =============================================================================
 # ENVIRONMENT SETUP
 # =============================================================================
@@ -624,7 +635,7 @@ def fixtures_dir() -> Path:
 
 
 @pytest.fixture
-def airflow_316_config(fixtures_dir) -> dict:
+def airflow_330_config(fixtures_dir) -> dict:
     """
     Load the Airflow 3.1.6 features test config.
 
@@ -632,22 +643,22 @@ def airflow_316_config(fixtures_dir) -> dict:
     """
     import yaml
 
-    config_path = fixtures_dir / "example_airflow_316_features.yaml"
+    config_path = fixtures_dir / "example_airflow_330_features.yaml"
     with open(config_path) as f:
         return yaml.safe_load(f)
 
 
 @pytest.fixture
-def deadline_config(airflow_316_config) -> dict:
+def deadline_config(airflow_330_config) -> dict:
     """Extract deadline configuration from test config."""
-    return airflow_316_config.get("schedule", {}).get("deadline", {})
+    return airflow_330_config.get("schedule", {}).get("deadline", {})
 
 
 @pytest.fixture
-def hitl_config(airflow_316_config) -> dict:
+def hitl_config(airflow_330_config) -> dict:
     """Extract HITL configuration from test config."""
     return (
-        airflow_316_config.get("destination", {}).get("quarantine", {}).get("hitl", {})
+        airflow_330_config.get("destination", {}).get("quarantine", {}).get("hitl", {})
     )
 
 

@@ -16,7 +16,7 @@ import yaml
 import os
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, cast
 
 
 # =============================================================================
@@ -145,7 +145,7 @@ class ConfigLoader:
                 return [substitute_value(item) for item in value]
             return value
 
-        return substitute_value(config)
+        return cast(Dict[str, Any], substitute_value(config))
 
     def merge_configs(
         self, base: Dict[str, Any], override: Dict[str, Any]

@@ -29,6 +29,11 @@ from rlam_airflow_framework.data_quality import (
     create_hitl_quarantine_approval_task,
     process_hitl_approval_result,
 )
+from rlam_airflow_framework.data_quality.engines import (
+    ValidationEngine,
+    BasicEngine,
+    SodaEngine,
+)
 
 
 class TestDataQualityCheckerInit:
@@ -101,7 +106,7 @@ class TestDataQualityCheckerRunChecks:
         }
         return DataQualityChecker(config, "test_dag", "test_task")
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_run_checks_empty_dataframe(self, mock_kafka):
         """Test run_checks with empty DataFrame returns early."""
         config = {"data_source": {"name": "test"}, "validation": {}}
@@ -115,7 +120,7 @@ class TestDataQualityCheckerRunChecks:
         assert valid_df.empty
         assert invalid_df.empty
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_run_checks_no_soda_config_uses_legacy(self, mock_kafka, sample_df):
         """Test run_checks falls back to legacy validation when no soda_checks."""
         config = {
@@ -160,17 +165,14 @@ class TestDataQualityCheckerBasicChecks:
 
     @pytest.fixture
     def checker(self):
-        """Create checker for testing."""
-        config = {
-            "data_source": {"name": "test_source"},
-            "validation": {
-                "soda_checks": {"checks": []},
-                "quality_gates": {"fail_threshold": 0.0, "warn_threshold": 0.9},
-            },
-        }
-        return DataQualityChecker(config, "test_dag", "test_task")
+        """Create a BasicEngine for testing (owns _execute_basic_check)."""
+        return BasicEngine(
+            source_name="test_source",
+            quality_gates={"fail_threshold": 0.0, "warn_threshold": 0.9},
+            soda_checks={"checks": []},
+        )
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_row_count_check_pass(self, mock_kafka, checker, sample_df):
         """Test row_count check passes when count exceeds minimum."""
         check = {"type": "row_count", "min": 1}
@@ -181,7 +183,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "pass"
         assert result["diagnostics"]["actual"] == 5
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_row_count_check_fail(self, mock_kafka, checker, sample_df):
         """Test row_count check fails when count is below minimum."""
         check = {"type": "row_count", "min": 10}
@@ -191,7 +193,7 @@ class TestDataQualityCheckerBasicChecks:
 
         assert result["outcome"] == "fail"
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_missing_count_check_pass(self, mock_kafka, checker, sample_df):
         """Test missing_count check passes when no nulls."""
         check = {"type": "missing_count", "column": "id", "max": 0}
@@ -202,7 +204,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "pass"
         assert result["diagnostics"]["missing_count"] == 0
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_missing_count_check_fail(self, mock_kafka, checker, sample_df):
         """Test missing_count check fails when nulls exceed max."""
         check = {"type": "missing_count", "column": "name", "max": 0}
@@ -215,7 +217,7 @@ class TestDataQualityCheckerBasicChecks:
         # Check that invalid_mask was updated
         assert invalid_mask.sum() == 1
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_duplicate_count_check_pass(self, mock_kafka, checker, sample_df):
         """Test duplicate_count check passes when no duplicates."""
         check = {"type": "duplicate_count", "column": "id", "max": 0}
@@ -226,7 +228,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "pass"
         assert result["diagnostics"]["duplicate_count"] == 0
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_duplicate_count_check_fail(self, mock_kafka, checker):
         """Test duplicate_count check fails when duplicates exist."""
         df_with_dups = pd.DataFrame(
@@ -242,7 +244,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "fail"
         assert result["diagnostics"]["duplicate_count"] == 2
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_invalid_percent_check_with_regex(self, mock_kafka, checker, sample_df):
         """Test invalid_percent check with regex pattern."""
         check = {
@@ -259,7 +261,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "fail"
         assert result["diagnostics"]["invalid_percent"] == 20.0
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_values_in_set_check_pass(self, mock_kafka, checker):
         """Test values_in_set check passes when all values are valid."""
         df = pd.DataFrame({"status": ["A", "B", "A"]})
@@ -274,7 +276,7 @@ class TestDataQualityCheckerBasicChecks:
 
         assert result["outcome"] == "pass"
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_values_in_set_check_fail(self, mock_kafka, checker):
         """Test values_in_set check fails when invalid values exist."""
         df = pd.DataFrame({"status": ["A", "X", "B"]})
@@ -290,7 +292,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "fail"
         assert result["diagnostics"]["invalid_count"] == 1
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_range_check_pass(self, mock_kafka, checker):
         """Test range check passes when values are in range."""
         df = pd.DataFrame({"value": [10, 20, 30]})
@@ -301,7 +303,7 @@ class TestDataQualityCheckerBasicChecks:
 
         assert result["outcome"] == "pass"
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_range_check_fail(self, mock_kafka, checker):
         """Test range check fails when values are out of range."""
         df = pd.DataFrame({"value": [10, 150, 30]})
@@ -313,7 +315,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "fail"
         assert result["diagnostics"]["invalid_count"] == 1
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_freshness_check_pass(self, mock_kafka, checker):
         """Test freshness check passes when data is recent."""
         df = pd.DataFrame(
@@ -326,7 +328,7 @@ class TestDataQualityCheckerBasicChecks:
 
         assert result["outcome"] == "pass"
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_freshness_check_fail(self, mock_kafka, checker):
         """Test freshness check fails when data is stale."""
         df = pd.DataFrame(
@@ -340,7 +342,7 @@ class TestDataQualityCheckerBasicChecks:
         assert result["outcome"] == "fail"
         assert result["diagnostics"]["age_hours"] > 24
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_check_with_error_handling(self, mock_kafka, checker):
         """Test check handles errors gracefully."""
         df = pd.DataFrame({"value": [1, 2, 3]})
@@ -355,141 +357,111 @@ class TestDataQualityCheckerBasicChecks:
 
 
 class TestDataQualityCheckerBuildSodaCL:
-    """Test _build_sodacl_yaml() method."""
+    """Test SodaEngine._build_sodacl_yaml() method."""
 
     def test_build_sodacl_empty_checks(self):
         """Test building SodaCL with no checks returns None."""
-        config = {
-            "data_source": {"name": "test"},
-            "validation": {"soda_checks": {"checks": []}},
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = SodaEngine("test", {}, {"checks": []})
 
-        result = checker._build_sodacl_yaml()
+        result = engine._build_sodacl_yaml()
         assert result is None
 
     def test_build_sodacl_row_count(self):
         """Test building SodaCL for row_count check."""
-        config = {
-            "data_source": {"name": "test_table"},
-            "validation": {
-                "soda_checks": {"checks": [{"type": "row_count", "min": 100}]}
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = SodaEngine(
+            "test_table", {}, {"checks": [{"type": "row_count", "min": 100}]}
+        )
 
-        result = checker._build_sodacl_yaml()
+        result = engine._build_sodacl_yaml()
+        assert result is not None
         assert "checks for test_table:" in result
         assert "row_count > 100" in result
 
     def test_build_sodacl_missing_count(self):
         """Test building SodaCL for missing_count check."""
-        config = {
-            "data_source": {"name": "test_table"},
-            "validation": {
-                "soda_checks": {
-                    "checks": [{"type": "missing_count", "column": "email", "max": 0}]
-                }
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = SodaEngine(
+            "test_table",
+            {},
+            {"checks": [{"type": "missing_count", "column": "email", "max": 0}]},
+        )
 
-        result = checker._build_sodacl_yaml()
+        result = engine._build_sodacl_yaml()
+        assert result is not None
         assert "missing_count(email) = 0" in result
 
     def test_build_sodacl_duplicate_count(self):
         """Test building SodaCL for duplicate_count check."""
-        config = {
-            "data_source": {"name": "test_table"},
-            "validation": {
-                "soda_checks": {
-                    "checks": [{"type": "duplicate_count", "column": "id", "max": 0}]
-                }
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = SodaEngine(
+            "test_table",
+            {},
+            {"checks": [{"type": "duplicate_count", "column": "id", "max": 0}]},
+        )
 
-        result = checker._build_sodacl_yaml()
+        result = engine._build_sodacl_yaml()
+        assert result is not None
         assert "duplicate_count(id) = 0" in result
 
     def test_build_sodacl_multiple_checks(self):
         """Test building SodaCL with multiple checks."""
-        config = {
-            "data_source": {"name": "test_table"},
-            "validation": {
-                "soda_checks": {
-                    "checks": [
-                        {"type": "row_count", "min": 1},
-                        {"type": "missing_count", "column": "id", "max": 0},
-                        {"type": "duplicate_count", "column": "id", "max": 0},
-                    ]
-                }
+        engine = SodaEngine(
+            "test_table",
+            {},
+            {
+                "checks": [
+                    {"type": "row_count", "min": 1},
+                    {"type": "missing_count", "column": "id", "max": 0},
+                    {"type": "duplicate_count", "column": "id", "max": 0},
+                ]
             },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        )
 
-        result = checker._build_sodacl_yaml()
+        result = engine._build_sodacl_yaml()
+        assert result is not None
         assert "row_count > 1" in result
         assert "missing_count(id) = 0" in result
         assert "duplicate_count(id) = 0" in result
 
 
 class TestDataQualityCheckerQualityGates:
-    """Test _determine_status() quality gate logic."""
+    """Test ValidationEngine._determine_status() quality gate logic."""
 
     def test_determine_status_passed(self):
         """Test status is 'passed' when pass_rate exceeds warn_threshold."""
-        config = {
-            "data_source": {"name": "test"},
-            "validation": {
-                "quality_gates": {"fail_threshold": 0.5, "warn_threshold": 0.9}
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = ValidationEngine(
+            "test", {"fail_threshold": 0.5, "warn_threshold": 0.9}
+        )
 
         results = {"pass_rate": 0.95}
-        status = checker._determine_status(results)
+        status = engine._determine_status(results)
         assert status == "passed"
 
     def test_determine_status_warning(self):
         """Test status is 'warning' when pass_rate is between thresholds."""
-        config = {
-            "data_source": {"name": "test"},
-            "validation": {
-                "quality_gates": {"fail_threshold": 0.5, "warn_threshold": 0.9}
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = ValidationEngine(
+            "test", {"fail_threshold": 0.5, "warn_threshold": 0.9}
+        )
 
         results = {"pass_rate": 0.7}
-        status = checker._determine_status(results)
+        status = engine._determine_status(results)
         assert status == "warning"
 
     def test_determine_status_failed(self):
         """Test status is 'failed' when pass_rate is below fail_threshold."""
-        config = {
-            "data_source": {"name": "test"},
-            "validation": {
-                "quality_gates": {"fail_threshold": 0.5, "warn_threshold": 0.9}
-            },
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = ValidationEngine(
+            "test", {"fail_threshold": 0.5, "warn_threshold": 0.9}
+        )
 
         results = {"pass_rate": 0.3}
-        status = checker._determine_status(results)
+        status = engine._determine_status(results)
         assert status == "failed"
 
     def test_determine_status_default_thresholds(self):
         """Test default thresholds when not specified."""
-        config = {
-            "data_source": {"name": "test"},
-            "validation": {"quality_gates": {}},
-        }
-        checker = DataQualityChecker(config, "dag", "task")
+        engine = ValidationEngine("test", {})
 
         # Default: fail_threshold=0.0, warn_threshold=0.95
         results = {"pass_rate": 0.5}
-        status = checker._determine_status(results)
+        status = engine._determine_status(results)
         # 0.5 is above fail (0.0) but below warn (0.95)
         assert status == "warning"
 
@@ -497,7 +469,7 @@ class TestDataQualityCheckerQualityGates:
 class TestDataQualityCheckerPublishMetrics:
     """Test _publish_dq_metrics() with mocked Kafka."""
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_publish_dq_metrics_success(self, mock_kafka):
         """Test successful metrics publishing."""
         config = {
@@ -510,15 +482,18 @@ class TestDataQualityCheckerPublishMetrics:
         results = {"status": "passed", "pass_rate": 1.0}
         checker._publish_dq_metrics(results)
 
-        mock_kafka.publish_quality_metrics.assert_called_once()
-        call_args = mock_kafka.publish_quality_metrics.call_args
+        mock_kafka.publish_pipeline_event.assert_called_once()
+        call_args = mock_kafka.publish_pipeline_event.call_args
         assert call_args.kwargs["dag_id"] == "test_dag"
         assert call_args.kwargs["task_id"] == "test_task"
+        assert call_args.kwargs["event_type"] == "data_quality_metrics"
+        assert call_args.kwargs["topic"] == "test-topic_dq_metrics"
+        assert call_args.kwargs["metadata"] == results
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_publish_dq_metrics_failure_handled(self, mock_kafka):
         """Test metrics publishing failure is handled gracefully."""
-        mock_kafka.publish_quality_metrics.side_effect = Exception(
+        mock_kafka.publish_pipeline_event.side_effect = Exception(
             "Kafka connection failed"
         )
 
@@ -686,7 +661,7 @@ class TestQuarantineHandler:
 class TestRunDataQualityChecksConvenience:
     """Test run_data_quality_checks() convenience function."""
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_run_data_quality_checks(self, mock_kafka):
         """Test convenience function creates checker and runs checks."""
         df = pd.DataFrame({"id": [1, 2, 3], "name": ["A", "B", "C"]})
@@ -712,7 +687,7 @@ class TestRunDataQualityChecksConvenience:
 class TestDataQualityCheckerLegacyValidation:
     """Test legacy validation rules processing."""
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_legacy_numeric_range_validation(self, mock_kafka):
         """Test legacy numeric range validation."""
         df = pd.DataFrame(
@@ -734,7 +709,7 @@ class TestDataQualityCheckerLegacyValidation:
         assert len(invalid_df) == 2  # 150 and 200
         assert len(valid_df) == 2  # 10 and 50
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_legacy_string_max_length_validation(self, mock_kafka):
         """Test legacy string max_length validation."""
         df = pd.DataFrame(
@@ -756,7 +731,7 @@ class TestDataQualityCheckerLegacyValidation:
         assert len(invalid_df) == 1  # Christopher
         assert len(valid_df) == 2
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_legacy_missing_required_field(self, mock_kafka):
         """Test legacy validation with missing required field."""
         df = pd.DataFrame(
@@ -778,7 +753,7 @@ class TestDataQualityCheckerLegacyValidation:
         # Should have a failed check for missing required field
         assert results["failed"] >= 1
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_legacy_no_validation_rules_skipped(self, mock_kafka):
         """Test legacy validation skips when no rules defined."""
         df = pd.DataFrame({"id": [1, 2, 3]})
@@ -797,7 +772,7 @@ class TestDataQualityCheckerLegacyValidation:
 class TestDataQualityCheckerEdgeCases:
     """Test edge cases and error handling."""
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_unicode_data_handling(self, mock_kafka):
         """Test handling of Unicode characters in data."""
         df = pd.DataFrame(
@@ -818,7 +793,7 @@ class TestDataQualityCheckerEdgeCases:
         assert results["total_rows"] == 4
         assert len(valid_df) == 4
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_null_heavy_dataframe(self, mock_kafka):
         """Test DataFrame with many null values."""
         df = pd.DataFrame(
@@ -846,7 +821,7 @@ class TestDataQualityCheckerEdgeCases:
         # The check should be in the results (may pass or fail depending on soda availability)
         assert "checks" in results
 
-    @patch("rlam_airflow_framework.data_quality.kafka_publisher")
+    @patch("rlam_airflow_framework.data_quality.checker.kafka_publisher")
     def test_special_characters_in_column_names(self, mock_kafka):
         """Test handling columns with special characters."""
         df = pd.DataFrame(
@@ -1115,7 +1090,7 @@ class TestProcessHitlApprovalResult:
 
     def test_approve_release_updates_status(self, sample_quarantine_df, config, mocker):
         """Test approve_release sets correct status."""
-        mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
 
         approval = {
             "action": "approve_release",
@@ -1136,7 +1111,7 @@ class TestProcessHitlApprovalResult:
 
     def test_reject_release_updates_status(self, sample_quarantine_df, config, mocker):
         """Test reject_release sets correct status."""
-        mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
 
         approval = {
             "action": "reject_release",
@@ -1156,7 +1131,7 @@ class TestProcessHitlApprovalResult:
 
     def test_reprocess_sets_pending_status(self, sample_quarantine_df, config, mocker):
         """Test reprocess action sets pending_reprocess status."""
-        mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
 
         approval = {
             "action": "reprocess",
@@ -1175,7 +1150,7 @@ class TestProcessHitlApprovalResult:
 
     def test_updates_approval_metadata(self, sample_quarantine_df, config, mocker):
         """Test approval metadata is correctly set."""
-        mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
 
         approval = {
             "action": "approve_release",
@@ -1196,7 +1171,7 @@ class TestProcessHitlApprovalResult:
 
     def test_publishes_kafka_event(self, sample_quarantine_df, config, mocker):
         """Test Kafka event is published on approval."""
-        mock_kafka = mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
 
         approval = {
             "action": "approve_release",
@@ -1218,7 +1193,7 @@ class TestProcessHitlApprovalResult:
 
     def test_handles_kafka_publish_failure(self, sample_quarantine_df, config, mocker):
         """Test gracefully handles Kafka publish failure."""
-        mock_kafka = mocker.patch("rlam_airflow_framework.data_quality.kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.data_quality.quarantine.kafka_publisher")
         mock_kafka.publish_pipeline_event.side_effect = Exception("Kafka down")
 
         approval = {

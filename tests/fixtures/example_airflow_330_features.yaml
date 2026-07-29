@@ -1,0 +1,109 @@
+# Test fixture: Airflow 3.3.0 features configuration
+# Used by unit tests to validate deadline, retry, and HITL functionality
+
+metadata:
+  tenant: shared_services
+  rerun_with_latest_version: true
+
+data_source:
+  name: test_market_data_330
+  type: rest_api
+  endpoint: https://api.example.com/market-data
+  authentication:
+    type: api_key
+    credentials:
+      api_key: "{{ var.value.test_api_key }}"
+
+schedule:
+  interval: "@hourly"
+  start_date: "2024-01-01"
+  catchup: false
+  max_active_runs: 8
+  tags:
+    - test
+    - airflow-330
+
+  retry:
+    policy: "transient"
+    exponential_backoff: true
+    retry_delay_seconds: 300
+    max_retries: 5
+
+  # Deadline Alert configuration
+  deadline:
+    tiers:
+      - enabled: true
+        timeout_minutes: 30
+        reference: average_runtime
+        kafka_topic: "test-pipeline-alerts"
+      - enabled: true
+        timeout_minutes: 45
+        reference: queued_at
+        kafka_topic: "test-pipeline-alerts"
+        email_enabled: true
+        email_recipients:
+          - "test-alerts@example.com"
+          - "test-oncall@example.com"
+
+destination:
+  primary:
+    type: snowflake_table
+    table: TEST.MARKET_DATA
+    write_mode: append
+    connection_id: snowflake_test
+
+  # Quarantine with HITL configuration
+  quarantine:
+    type: snowflake_table
+    table: TEST.QUARANTINE_RECORDS
+    write_mode: append
+
+    hitl:
+      enabled: true
+      timeout_hours: 24
+      allowed_roles:
+        - data-steward
+        - admin
+
+validation:
+  soda_checks:
+    checks:
+      - type: row_count
+        min: 1
+      - type: missing_count
+        column: symbol
+        max: 0
+      - type: missing_count
+        column: price
+        max: 0
+      - type: range
+        column: price
+        min: 0
+        max: 1000000
+
+  quality_gates:
+    fail_threshold: 0.90
+    warn_threshold: 0.95
+    quarantine_invalid: true
+
+event:
+  topic: test-market-data
+  publish_on:
+    - success
+    - failure
+
+partition:
+  enabled: true
+  dimension: date
+  column: event_date
+  granularity: day
+  mapper: fan_out
+  wait_policy: wait_for_all
+  runtime_assigned: false
+  max_fan_out: 64
+
+incremental:
+  enabled: true
+  watermark_column: updated_at
+  initial_watermark: "2024-01-01T00:00:00Z"
+  lookback: 60

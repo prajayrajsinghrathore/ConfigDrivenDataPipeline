@@ -1,0 +1,87 @@
+# Local sanity-deploy override for Docker Desktop Kubernetes (NOT production).
+# Deploy against the OFFICIAL apache-airflow chart:
+#   helm upgrade --install airflow apache-airflow/airflow \
+#     --version 1.22.0 -n airflow --create-namespace \
+#     -f helm/values/local-docker-desktop.yaml
+#
+# Purpose: prove the chart + our custom 3.3.0 image stand up on a real cluster,
+# and verify the apiServer schema. Strips every prod-only assumption from
+# production.yaml (ACR image, managed-premium storage, istio, workload identity).
+
+# No official chart supports Airflow 3.3.0 yet (latest chart 1.22.0 = app 3.2.2);
+# we run OUR 3.3.0 image and tell the chart the real version for feature gating.
+airflowVersion: "3.3.0"
+defaultAirflowRepository: configdrivenpipeline
+defaultAirflowTag: "latest"
+
+images:
+  airflow:
+    repository: configdrivenpipeline
+    tag: "latest"
+    pullPolicy: Never          # image lives in the local Docker daemon
+  # keep migrations/pod-template on the same local image
+  migrationsWaitTimeout: 180
+
+executor: CeleryExecutor
+
+# Chart requires a stable secret key (any value for local).
+webserverSecretKey: "local-sanity-not-a-secret"
+
+# ENTRYPOINT: the image now ships a chart-native entrypoint (docker/entrypoint.sh)
+# that handles the chart's `bash -c ...` forms, so NO per-component command/args
+# overrides are needed — the chart's native args work as-is. (Before the fix,
+# ENTRYPOINT ["airflow"] turned every `bash -c ...` into `airflow bash ...` and
+# crashlooped the whole release.)
+# logGroomerSidecar disabled everywhere: it runs the official image's /clean-logs
+# helper, which the DHI base doesn't ship (same missing-helper class as
+# /entrypoint). Non-essential (log pruning); disable for the sanity check.
+# Production choice: add /clean-logs to the image OR keep groomers off and rotate
+# logs another way.
+apiServer:
+  replicas: 1
+scheduler:
+  replicas: 1
+  logGroomerSidecar:
+    enabled: false
+dagProcessor:
+  enabled: true
+  logGroomerSidecar:
+    enabled: false
+triggerer:
+  replicas: 1
+  logGroomerSidecar:
+    enabled: false
+workers:
+  replicas: 1
+  logGroomerSidecar:
+    enabled: false
+
+# Jobs also use the chart's native (bash) commands — the new entrypoint handles
+# them, no override needed.
+migrateDatabaseJob:
+  useHelmHooks: true
+createUserJob:
+  useHelmHooks: true
+
+# Bundled metadata DB + broker (self-contained local test).
+postgresql:
+  enabled: true
+redis:
+  enabled: true
+
+# No git-sync / no dag PVC for the sanity check — DAGs are not the point here
+# (dags/generate_dags.py + config/ are NOT baked into the image yet — a separate
+# baking gap, same class as the plugins one; tracked for the AKS work). Core
+# pods should still reach Running.
+dags:
+  gitSync:
+    enabled: false
+  persistence:
+    enabled: false
+
+logs:
+  persistence:
+    enabled: false
+
+# Trim resource requests so it fits a single Docker Desktop node.
+workers_resources: {}

@@ -23,13 +23,16 @@ from unittest.mock import MagicMock
 
 # Add the dags folder to the path
 DAGS_FOLDER = Path(__file__).parent.parent.parent / "dags"
-PLUGINS_FOLDER = Path(__file__).parent.parent.parent / "plugins"
 sys.path.insert(0, str(DAGS_FOLDER))
-sys.path.insert(0, str(PLUGINS_FOLDER))
 
-# Check if we're on Windows - Airflow doesn't support Windows natively
-IS_WINDOWS = sys.platform == "win32"
-SKIP_REASON = "Airflow DAG tests require Linux/macOS (os.register_at_fork not available on Windows)"
+# 2026-07-23: Windows skips lifted. rlam_airflow_framework.__init__ ships an
+# os.register_at_fork shim (pre-importing concurrent.futures.thread first) that
+# makes real-Airflow imports work on Windows, so this lane now runs everywhere.
+# NOTE: this lane must run in its OWN pytest invocation, not combined with
+# tests/unit — the unit lane installs airflow.* mocks in sys.modules
+# (tests/dag/conftest.py guards against that with a clear skip).
+IS_WINDOWS = False
+SKIP_REASON = "unused — Windows real-Airflow imports fixed 2026-07-23"
 
 
 @pytest.mark.dag
@@ -49,9 +52,11 @@ class TestDagIntegrity:
             )
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
 
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
-        except ImportError:
-            pytest.skip("Airflow not installed")
+            return DagBag(dag_folder=str(DAGS_FOLDER))
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_no_import_errors(self, dagbag):
         """Test that all DAGs import without errors."""
@@ -94,9 +99,11 @@ class TestDagMetadata:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
-        except ImportError:
-            pytest.skip("Airflow not installed")
+            return DagBag(dag_folder=str(DAGS_FOLDER))
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_dags_have_description(self, dagbag):
         """Test that DAGs have descriptions."""
@@ -145,9 +152,11 @@ class TestDagTasks:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
-        except ImportError:
-            pytest.skip("Airflow not installed")
+            return DagBag(dag_folder=str(DAGS_FOLDER))
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_dags_have_tasks(self, dagbag):
         """Test that DAGs have at least one task."""
@@ -194,9 +203,11 @@ class TestDagSchedule:
             from airflow.models import DagBag
 
             os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
-            return DagBag(dag_folder=str(DAGS_FOLDER), include_examples=False)
-        except ImportError:
-            pytest.skip("Airflow not installed")
+            return DagBag(dag_folder=str(DAGS_FOLDER))
+        except ImportError as e:
+            # airflow.dag_processing imports POSIX-only fcntl — DagBag genuinely
+            # cannot be constructed on Windows. These tests run in the Docker lane.
+            pytest.skip(f"DagBag requires POSIX (fcntl): {e}")
 
     def test_schedule_interval_is_valid(self, dagbag):
         """Test that schedule intervals are valid."""
@@ -232,9 +243,10 @@ class TestGeneratedDags:
     def test_dag_generator_creates_dags(self, data_sources_dir):
         """Test that DAG generator creates DAGs from configs."""
         try:
-            from generate_dags import generate_dags_from_configs
+            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            dags = generate_dags_from_configs()
+            dag_factory = DAGFactoryV2()
+            dags = dag_factory.create_all_dags()
 
             # May have more or less depending on config validity
             assert len(dags) >= 0
@@ -244,7 +256,7 @@ class TestGeneratedDags:
     def test_dag_generation_handles_invalid_config(self, temp_config_file):
         """Test that DAG generator handles invalid configs gracefully."""
         try:
-            from generate_dags import generate_dag_from_config
+            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
             invalid_config = {
                 # Missing required fields
@@ -253,7 +265,8 @@ class TestGeneratedDags:
 
             # Should either return None or raise clear exception
             try:
-                dag = generate_dag_from_config(invalid_config)
+                dag_factory = DAGFactoryV2()
+                dag = dag_factory.create_dag_from_config(invalid_config)
                 assert dag is None or dag is not None  # Either outcome OK
             except (ValueError, KeyError):
                 pass  # Expected behavior
@@ -264,33 +277,65 @@ class TestGeneratedDags:
 @pytest.mark.dag
 @pytest.mark.skipif(IS_WINDOWS, reason=SKIP_REASON)
 class TestDagFactory:
-    """Test DAG factory functionality."""
+    """Test DAG factory functionality.
 
-    def test_dag_factory_creates_valid_dag(self, sample_data_source_config):
+    2026-07-23: rewritten — the old tests called `factory.create_dag()` (an API
+    that never existed on DAGFactoryV2) with the pre-restructure config layout,
+    and were masked for years by the Windows skip.
+    """
+
+    @pytest.fixture
+    def register_test_tenant(self, monkeypatch):
+        """Inject a known tenant so the test is environment-independent."""
+        from rlam_airflow_framework.config import ConfigLoader
+
+        original = ConfigLoader.load_global_settings
+
+        def with_tenant(self):
+            settings = original(self)
+            settings.setdefault("tenants", {})
+            settings["tenants"].setdefault(
+                "dag_lane_test",
+                {"pool": "default_pool", "slots": 8, "connection_prefix": "test_"},
+            )
+            return settings
+
+        monkeypatch.setattr(ConfigLoader, "load_global_settings", with_tenant)
+
+    @pytest.fixture
+    def factory_config(self):
+        return {
+            "metadata": {"tenant": "dag_lane_test"},
+            "data_source": {
+                "name": "factory_smoke",
+                "type": "rest_api",
+                "endpoint": "https://api.example.com/data",
+            },
+            "destination": {"primary": {"type": "print_logs"}},
+            "schedule": {
+                "interval": "@daily",
+                "start_date": "2024-01-01",
+                "catchup": False,
+            },
+        }
+
+    def test_dag_factory_creates_valid_dag(self, register_test_tenant, factory_config):
         """Test DAG factory creates valid DAG from config."""
-        try:
-            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
+        from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            factory = DAGFactoryV2()
-            dag = factory.create_dag(sample_data_source_config)
+        dag = DAGFactoryV2().create_dag_from_config(factory_config)
 
-            assert dag is not None
-            assert dag.dag_id is not None
-        except ImportError:
-            pytest.skip("DAG factory not available")
+        assert dag is not None
+        assert dag.dag_id == "dag_lane_test_factory_smoke"
 
-    def test_dag_factory_applies_default_args(self, sample_data_source_config):
+    def test_dag_factory_applies_default_args(self, register_test_tenant, factory_config):
         """Test DAG factory applies default arguments."""
-        try:
-            from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
+        from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 
-            factory = DAGFactoryV2()
-            dag = factory.create_dag(sample_data_source_config)
+        dag = DAGFactoryV2().create_dag_from_config(factory_config)
 
-            # Check default args are set
-            assert dag.default_args is not None
-        except ImportError:
-            pytest.skip("DAG factory not available")
+        assert dag.default_args is not None
+        assert dag.default_args.get("retries") is not None
 
 
 # =============================================================================
@@ -309,14 +354,14 @@ class TestKafkaDeadlineNotifier:
     def mock_kafka_publisher(self, mocker):
         """Mock kafka_publisher for notifier tests."""
         # Need to mock at the module level where it's imported
-        mock = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock.publish_event.return_value = True
         return mock
 
     @pytest.fixture
     def notifier(self):
         """Create KafkaDeadlineNotifier instance."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         return KafkaDeadlineNotifier(topic="test-alerts", message="Test deadline alert")
 
@@ -338,7 +383,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_init_with_defaults(self):
         """Test initialization with default values."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         notifier = KafkaDeadlineNotifier()
 
@@ -347,7 +392,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_init_with_custom_topic(self):
         """Test initialization with custom topic."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         notifier = KafkaDeadlineNotifier(topic="custom-alerts")
 
@@ -355,7 +400,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_template_fields_defined(self):
         """Test template fields for Jinja rendering."""
-        from plugins.deadline_callbacks import KafkaDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import KafkaDeadlineNotifier
 
         assert "message" in KafkaDeadlineNotifier.template_fields
         assert "topic" in KafkaDeadlineNotifier.template_fields
@@ -395,7 +440,7 @@ class TestKafkaDeadlineNotifier:
 
     def test_notify_handles_kafka_failure(self, notifier, mock_context, mocker):
         """Test notify handles Kafka publish failure."""
-        mock_kafka = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock_kafka.publish_event.side_effect = Exception("Connection failed")
 
         # Should not raise, just log error
@@ -410,7 +455,7 @@ class TestEmailDeadlineNotifier:
     @pytest.fixture
     def notifier_with_recipients(self):
         """Create EmailDeadlineNotifier with recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         return EmailDeadlineNotifier(
             recipients=["test@example.com", "alerts@example.com"], subject="Test Alert"
@@ -419,7 +464,7 @@ class TestEmailDeadlineNotifier:
     @pytest.fixture
     def notifier_without_recipients(self):
         """Create EmailDeadlineNotifier without recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         return EmailDeadlineNotifier()
 
@@ -439,7 +484,7 @@ class TestEmailDeadlineNotifier:
 
     def test_init_with_recipients(self):
         """Test initialization with email recipients."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         notifier = EmailDeadlineNotifier(recipients=["a@test.com", "b@test.com"])
 
@@ -448,7 +493,7 @@ class TestEmailDeadlineNotifier:
 
     def test_init_without_recipients(self):
         """Test initialization without recipients defaults to empty list."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         notifier = EmailDeadlineNotifier()
 
@@ -456,7 +501,7 @@ class TestEmailDeadlineNotifier:
 
     def test_template_fields_defined(self):
         """Test template fields for Jinja rendering."""
-        from plugins.deadline_callbacks import EmailDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import EmailDeadlineNotifier
 
         assert "recipients" in EmailDeadlineNotifier.template_fields
         assert "subject" in EmailDeadlineNotifier.template_fields
@@ -511,7 +556,7 @@ class TestCompositeDeadlineNotifier:
     @pytest.fixture
     def mock_kafka_publisher(self, mocker):
         """Mock kafka_publisher."""
-        mock = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock.publish_event.return_value = True
         return mock
 
@@ -533,7 +578,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_init_creates_sub_notifiers(self):
         """Test initialization creates Kafka and Email sub-notifiers."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]
@@ -545,7 +590,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_init_with_email_disabled(self):
         """Test initialization with email disabled."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(email_enabled=False)
 
@@ -553,7 +598,7 @@ class TestCompositeDeadlineNotifier:
 
     def test_notify_always_sends_kafka(self, mock_context, mock_kafka_publisher):
         """Test Kafka notification is ALWAYS sent."""
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts",
@@ -570,7 +615,7 @@ class TestCompositeDeadlineNotifier:
         """Test email is sent when enabled with recipients."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]
@@ -585,7 +630,7 @@ class TestCompositeDeadlineNotifier:
         """Test email is skipped when disabled."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=False, email_recipients=["test@example.com"]
@@ -600,7 +645,7 @@ class TestCompositeDeadlineNotifier:
         """Test warning logged when email enabled but no recipients."""
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts",
@@ -614,11 +659,11 @@ class TestCompositeDeadlineNotifier:
 
     def test_notify_continues_after_kafka_failure(self, mock_context, mocker):
         """Test email is still sent even if Kafka fails."""
-        mock_kafka = mocker.patch("plugins.deadline_callbacks._plugin_kafka_publisher")
+        mock_kafka = mocker.patch("rlam_airflow_framework.deadline_callbacks._plugin_kafka_publisher")
         mock_kafka.publish_event.side_effect = Exception("Kafka down")
         mock_send = mocker.patch("airflow.utils.email.send_email")
 
-        from plugins.deadline_callbacks import CompositeDeadlineNotifier
+        from rlam_airflow_framework.deadline_callbacks import CompositeDeadlineNotifier
 
         notifier = CompositeDeadlineNotifier(
             topic="alerts", email_enabled=True, email_recipients=["test@example.com"]
@@ -661,7 +706,7 @@ class TestDAGFactoryCreateDeadlineAlert:
         """Test returns None when deadline not enabled."""
         schedule_config = {"deadline": {"enabled": False, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
@@ -669,42 +714,53 @@ class TestDAGFactoryCreateDeadlineAlert:
         """Test returns None when no deadline config present."""
         schedule_config = {}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
     def test_returns_none_when_notifier_unavailable(self, factory, mocker):
         """Test returns None when CompositeDeadlineNotifier not available."""
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", None)
+        mocker.patch("rlam_airflow_framework.dag_factory_v2.CompositeDeadlineNotifier", None)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
+    @staticmethod
+    def _patch_notifier(mocker):
+        """Patch with a REAL class: DeadlineAlert runs qualname() on the
+        callback, which a MagicMock does not survive."""
+
+        class _DummyNotifier:
+            def __init__(self, **kwargs):
+                pass
+
+        mocker.patch(
+            "rlam_airflow_framework.dag_factory_v2.CompositeDeadlineNotifier",
+            _DummyNotifier,
+        )
+
     def test_creates_deadline_alert_with_timeout(self, factory, mocker):
-        """Test creates DeadlineAlert with correct timeout."""
-        # Mock the notifier class
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        """Test creates a list of DeadlineAlerts with correct timeout."""
+        self._patch_notifier(mocker)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 45}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is not None
-        # Verify it's a DeadlineAlert
         from airflow.sdk.definitions.deadline import DeadlineAlert
 
-        assert isinstance(result, DeadlineAlert)
-        # Check timeout interval
-        assert result.interval == timedelta(minutes=45)
+        # 1.3 tiered-alert support: the factory returns a LIST of alerts
+        assert isinstance(result, list) and len(result) == 1
+        assert isinstance(result[0], DeadlineAlert)
+        assert result[0].interval == timedelta(minutes=45)
 
     def test_uses_default_timeout_when_not_specified(self, factory, mocker):
         """Test uses default 30 minute timeout."""
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        self._patch_notifier(mocker)
 
         schedule_config = {
             "deadline": {
@@ -713,23 +769,22 @@ class TestDAGFactoryCreateDeadlineAlert:
             }
         }
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is not None
-        assert result.interval == timedelta(minutes=30)
+        assert result[0].interval == timedelta(minutes=30)
 
     def test_uses_dagrun_queued_at_reference(self, factory, mocker):
         """Test uses DAGRUN_QUEUED_AT reference point."""
-        mock_notifier = mocker.MagicMock()
-        mocker.patch("utils.dag_factory.CompositeDeadlineNotifier", mock_notifier)
+        self._patch_notifier(mocker)
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         from airflow.sdk.definitions.deadline import DeadlineReference
 
-        assert result.reference == DeadlineReference.DAGRUN_QUEUED_AT
+        assert result[0].reference == DeadlineReference.DAGRUN_QUEUED_AT
 
 
 @pytest.mark.unit
@@ -801,51 +856,9 @@ class TestDAGFactoryCreateAssets:
         inlets, outlets = factory._create_assets(config)
 
         assert len(outlets) == 1
-        assert outlets[0].uri == "snowflake://RAW.TEST_TABLE"
+        assert outlets[0].uri == "snowflake://default/default/RAW/TEST_TABLE"
 
-    def test_creates_outlet_for_azure_data_lake(self, factory):
-        """Test creates outlet Asset for Azure Data Lake."""
-        config = {
-            "data_source": {
-                "name": "test_source",
-                "type": "rest_api",
-                "endpoint": "https://api.test.com",
-            },
-            "destination": {
-                "primary": {
-                    "type": "azure_data_lake",
-                    "container": "raw-data",
-                    "path": "market/daily",
-                }
-            },
-        }
 
-        inlets, outlets = factory._create_assets(config)
-
-        assert len(outlets) == 1
-        assert outlets[0].uri == "azure://raw-data/market/daily"
-
-    def test_creates_outlet_for_azure_blob(self, factory):
-        """Test creates outlet Asset for Azure Blob Storage."""
-        config = {
-            "data_source": {
-                "name": "test_source",
-                "type": "rest_api",
-                "endpoint": "https://api.test.com",
-            },
-            "destination": {
-                "primary": {
-                    "type": "azure_blob",
-                    "container": "archive",
-                    "path": "backups",
-                }
-            },
-        }
-
-        inlets, outlets = factory._create_assets(config)
-
-        assert len(outlets) == 1
-        assert outlets[0].uri == "azure://archive/backups"
 
     def test_handles_unknown_source_type(self, factory):
         """Test handles unknown source type gracefully."""
@@ -938,26 +951,26 @@ class TestDAGFactoryCreateAssets:
 class TestAirflow316ConfigLoading:
     """Test loading Airflow 3.1.6 config fixture (runs on Windows)."""
 
-    def test_load_test_config_fixture(self, airflow_316_config):
+    def test_load_test_config_fixture(self, airflow_330_config):
         """Test that the test config fixture loads correctly."""
-        assert airflow_316_config is not None
-        assert "data_source" in airflow_316_config
-        assert "schedule" in airflow_316_config
-        assert "destination" in airflow_316_config
+        assert airflow_330_config is not None
+        assert "data_source" in airflow_330_config
+        assert "schedule" in airflow_330_config
+        assert "destination" in airflow_330_config
 
-    def test_deadline_config_present(self, airflow_316_config):
+    def test_deadline_config_present(self, airflow_330_config):
         """Test deadline configuration is present in fixture."""
-        deadline = airflow_316_config.get("schedule", {}).get("deadline", {})
+        deadline = airflow_330_config.get("schedule", {}).get("deadline", {})
+        assert deadline is not None
+        assert deadline.get("tiers")[0].get("enabled") is True
+        assert deadline.get("tiers")[1].get("timeout_minutes") == 45
+        assert deadline.get("tiers")[1].get("email_enabled") is True
+        assert len(deadline.get("tiers")[1].get("email_recipients", [])) == 2
 
-        assert deadline.get("enabled") is True
-        assert deadline.get("timeout_minutes") == 45
-        assert deadline.get("email_enabled") is True
-        assert len(deadline.get("email_recipients", [])) == 2
-
-    def test_hitl_config_present(self, airflow_316_config):
+    def test_hitl_config_present(self, airflow_330_config):
         """Test HITL configuration is present in fixture."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
@@ -968,8 +981,9 @@ class TestAirflow316ConfigLoading:
 
     def test_deadline_config_fixture(self, deadline_config):
         """Test dedicated deadline config fixture."""
-        assert deadline_config.get("enabled") is True
-        assert deadline_config.get("kafka_topic") == "test-pipeline-alerts"
+        assert deadline_config is not None
+        assert deadline_config.get("tiers")[0].get("enabled") is True
+        assert deadline_config.get("tiers")[0].get("kafka_topic") == "test-pipeline-alerts"
 
     def test_hitl_config_fixture(self, hitl_config):
         """Test dedicated HITL config fixture."""

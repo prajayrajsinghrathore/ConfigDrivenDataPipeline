@@ -313,17 +313,17 @@ class TestValidationConfigValidation:
 
 
 # =============================================================================
-# AIRFLOW 3.1.6 FEATURES SCHEMA VALIDATION (Deadline & HITL)
+# AIRFLOW 3.3.0 FEATURES SCHEMA VALIDATION (Deadline & HITL)
 # =============================================================================
 
 
 @pytest.mark.contract
-class TestAirflow316SchemaValidation:
+class TestAirflow330SchemaValidation:
     """
-    Validate Airflow 3.1.6 features configuration (deadline alerts & HITL).
+    Validate Airflow 3.3.0 features configuration (deadline alerts, retry & HITL).
 
     These tests validate the schema structure for new features added in
-    the Airflow 3.1.6 upgrade without requiring jsonschema.
+    the Airflow 3.3.0 upgrade without requiring jsonschema.
     """
 
     @pytest.fixture
@@ -332,74 +332,82 @@ class TestAirflow316SchemaValidation:
         return Path(__file__).parent.parent / "fixtures"
 
     @pytest.fixture
-    def airflow_316_config(self, fixtures_dir):
-        """Load the Airflow 3.1.6 test config fixture."""
-        config_path = fixtures_dir / "example_airflow_316_features.yaml"
+    def airflow_330_config(self, fixtures_dir):
+        """Load the Airflow 3.3.0 test config fixture."""
+        config_path = fixtures_dir / "example_airflow_330_features.yaml"
         if not config_path.exists():
-            pytest.skip("Airflow 3.1.6 test fixture not found")
+            pytest.skip("Airflow 3.3.0 test fixture not found")
 
         with open(config_path) as f:
             return yaml.safe_load(f)
 
-    def test_config_fixture_loads(self, airflow_316_config):
-        """Test that the 3.1.6 config fixture loads without error."""
-        assert airflow_316_config is not None
-        assert isinstance(airflow_316_config, dict)
+    def test_config_fixture_loads(self, airflow_330_config):
+        """Test that the 3.3.0 config fixture loads without error."""
+        assert airflow_330_config is not None
+        assert isinstance(airflow_330_config, dict)
 
-    def test_deadline_config_structure(self, airflow_316_config):
+    def test_deadline_config_structure(self, airflow_330_config):
         """Test deadline configuration has correct structure."""
-        schedule = airflow_316_config.get("schedule", {})
+        schedule = airflow_330_config.get("schedule", {})
         deadline = schedule.get("deadline", {})
 
-        # Verify all expected fields exist
-        assert "enabled" in deadline, "deadline.enabled is required"
-        assert "timeout_minutes" in deadline, "deadline.timeout_minutes is required"
-        assert "kafka_topic" in deadline, "deadline.kafka_topic is required"
-        assert "email_enabled" in deadline, "deadline.email_enabled is required"
-        assert "email_recipients" in deadline, "deadline.email_recipients is required"
+        # Verify all expected fields exist in tiers
+        tiers = deadline.get("tiers", [])
+        assert len(tiers) > 0, "deadline.tiers is required"
+        for tier in tiers:
+            assert "enabled" in tier, "tier.enabled is required"
+            assert "timeout_minutes" in tier, "tier.timeout_minutes is required"
+            assert "kafka_topic" in tier, "tier.kafka_topic is required"
 
-    def test_deadline_enabled_is_boolean(self, airflow_316_config):
-        """Test deadline.enabled is a boolean."""
-        enabled = (
-            airflow_316_config.get("schedule", {}).get("deadline", {}).get("enabled")
+    def test_deadline_enabled_is_boolean(self, airflow_330_config):
+        """Test deadline tier.enabled is a boolean."""
+        tiers = (
+            airflow_330_config.get("schedule", {}).get("deadline", {}).get("tiers", [])
         )
 
-        assert isinstance(enabled, bool), (
-            f"deadline.enabled should be bool, got {type(enabled)}"
-        )
-
-    def test_deadline_timeout_minutes_is_positive(self, airflow_316_config):
-        """Test timeout_minutes is a positive integer."""
-        timeout = (
-            airflow_316_config.get("schedule", {})
-            .get("deadline", {})
-            .get("timeout_minutes")
-        )
-
-        assert isinstance(timeout, int), (
-            f"timeout_minutes should be int, got {type(timeout)}"
-        )
-        assert timeout > 0, f"timeout_minutes should be positive, got {timeout}"
-
-    def test_deadline_email_recipients_is_array(self, airflow_316_config):
-        """Test email_recipients is an array of strings."""
-        recipients = (
-            airflow_316_config.get("schedule", {})
-            .get("deadline", {})
-            .get("email_recipients", [])
-        )
-
-        assert isinstance(recipients, list), (
-            f"email_recipients should be list, got {type(recipients)}"
-        )
-        for recipient in recipients:
-            assert isinstance(recipient, str), (
-                f"Each recipient should be string, got {type(recipient)}"
+        for tier in tiers:
+            enabled = tier.get("enabled")
+            assert isinstance(enabled, bool), (
+                f"tier.enabled should be bool, got {type(enabled)}"
             )
 
-    def test_hitl_config_structure(self, airflow_316_config):
+    def test_deadline_timeout_minutes_is_positive(self, airflow_330_config):
+        """Test timeout_minutes is a positive integer."""
+        tiers = (
+            airflow_330_config.get("schedule", {})
+            .get("deadline", {})
+            .get("tiers", [])
+        )
+
+        for tier in tiers:
+            timeout = tier.get("timeout_minutes")
+            assert isinstance(timeout, int), (
+                f"timeout_minutes should be int, got {type(timeout)}"
+            )
+            assert timeout > 0, f"timeout_minutes should be positive, got {timeout}"
+
+    def test_deadline_email_recipients_is_array(self, airflow_330_config):
+        """Test email_recipients is an array of strings."""
+        tiers = (
+            airflow_330_config.get("schedule", {})
+            .get("deadline", {})
+            .get("tiers", [])
+        )
+
+        for tier in tiers:
+            if "email_recipients" in tier:
+                recipients = tier.get("email_recipients", [])
+                assert isinstance(recipients, list), (
+                    f"email_recipients should be list, got {type(recipients)}"
+                )
+                for recipient in recipients:
+                    assert isinstance(recipient, str), (
+                        f"Each recipient should be string, got {type(recipient)}"
+                    )
+
+    def test_hitl_config_structure(self, airflow_330_config):
         """Test HITL configuration has correct structure."""
-        quarantine = airflow_316_config.get("destination", {}).get("quarantine", {})
+        quarantine = airflow_330_config.get("destination", {}).get("quarantine", {})
         hitl = quarantine.get("hitl", {})
 
         # Verify all expected fields exist
@@ -407,10 +415,10 @@ class TestAirflow316SchemaValidation:
         assert "timeout_hours" in hitl, "hitl.timeout_hours is required"
         assert "allowed_roles" in hitl, "hitl.allowed_roles is required"
 
-    def test_hitl_enabled_is_boolean(self, airflow_316_config):
+    def test_hitl_enabled_is_boolean(self, airflow_330_config):
         """Test hitl.enabled is a boolean."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
@@ -420,10 +428,10 @@ class TestAirflow316SchemaValidation:
             f"hitl.enabled should be bool, got {type(enabled)}"
         )
 
-    def test_hitl_timeout_hours_is_positive(self, airflow_316_config):
+    def test_hitl_timeout_hours_is_positive(self, airflow_330_config):
         """Test timeout_hours is a positive integer."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
@@ -434,10 +442,10 @@ class TestAirflow316SchemaValidation:
         )
         assert timeout > 0, f"timeout_hours should be positive, got {timeout}"
 
-    def test_hitl_allowed_roles_is_array(self, airflow_316_config):
+    def test_hitl_allowed_roles_is_array(self, airflow_330_config):
         """Test allowed_roles is an array of strings."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
@@ -451,16 +459,41 @@ class TestAirflow316SchemaValidation:
                 f"Each role should be string, got {type(role)}"
             )
 
-    def test_hitl_allowed_roles_contains_data_steward(self, airflow_316_config):
+    def test_hitl_allowed_roles_contains_data_steward(self, airflow_330_config):
         """Test allowed_roles includes data-steward role."""
         hitl = (
-            airflow_316_config.get("destination", {})
+            airflow_330_config.get("destination", {})
             .get("quarantine", {})
             .get("hitl", {})
         )
         roles = hitl.get("allowed_roles", [])
 
         assert "data-steward" in roles, "data-steward should be in allowed_roles"
+
+    def test_partition_config_structure(self, airflow_330_config):
+        """Test partition configuration has correct structure."""
+        partition = airflow_330_config.get("partition", {})
+        assert partition.get("enabled") is True
+        assert partition.get("dimension") == "date"
+        assert partition.get("column") == "event_date"
+        assert partition.get("granularity") == "day"
+        assert partition.get("mapper") == "fan_out"
+        assert partition.get("wait_policy") == "wait_for_all"
+        assert partition.get("runtime_assigned") is False
+        assert partition.get("max_fan_out") == 64
+
+    def test_incremental_config_structure(self, airflow_330_config):
+        """Test incremental configuration has correct structure."""
+        incremental = airflow_330_config.get("incremental", {})
+        assert incremental.get("enabled") is True
+        assert incremental.get("watermark_column") == "updated_at"
+        assert incremental.get("initial_watermark") == "2024-01-01T00:00:00Z"
+        assert incremental.get("lookback") == 60
+
+    def test_schedule_max_active_runs(self, airflow_330_config):
+        """Test schedule has max_active_runs."""
+        schedule = airflow_330_config.get("schedule", {})
+        assert schedule.get("max_active_runs") == 8
 
 
 @pytest.mark.contract
@@ -520,3 +553,63 @@ class TestDataSourceSchemaDeadlineValidation:
                     assert field in hitl, (
                         f"{config_file.name}: hitl.{field} missing when enabled"
                     )
+
+
+class TestNoUnknownTopLevelKeys:
+    """Reject unknown top-level keys in every pipeline config.
+
+    Guards against dead configuration: the factory only reads the keys listed
+    below, so anything else (a typo like `deadine:`, or legacy-layout leftovers
+    such as top-level `retries:`/`data_quality_checks:`) validates silently and
+    does NOTHING. This class of bug shipped twice before this test existed
+    (financial_operations_v2's top-level hitl/deadline/retry; joke_api_test's
+    entire legacy DQ/transformation config). Extend ALLOWED_TOP_LEVEL_KEYS only
+    when the factory actually starts reading a new key.
+    """
+
+    # Keys consumed by dag_factory_v2 / taskflow_tasks / config_loader.
+    # NOTE: `authentication` is documented in the schema but read nowhere —
+    # deliberately excluded until implemented.
+    ALLOWED_TOP_LEVEL_KEYS = {
+        "metadata",
+        "data_source",
+        "schedule",
+        "destination",
+        "validation",
+        "partition",
+        "incremental",
+        "transformations",
+        "event",
+    }
+
+    @pytest.fixture
+    def config_files(self):
+        data_sources = Path(__file__).parent.parent.parent / "config" / "data_sources"
+        return sorted(data_sources.glob("*.yaml"))
+
+    def test_no_unknown_top_level_keys(self, config_files):
+        problems = []
+        for config_file in config_files:
+            with open(config_file) as f:
+                config = yaml.safe_load(f)
+            unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
+            if unknown:
+                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+        assert not problems, (
+            "Unknown top-level keys are dead configuration (the factory never reads them):\n"
+            + "\n".join(problems)
+        )
+
+    def test_fixture_configs_have_no_unknown_top_level_keys(self):
+        """Same guard for test fixtures so examples stay honest."""
+        fixtures = Path(__file__).parent.parent / "fixtures"
+        problems = []
+        for config_file in sorted(fixtures.glob("*.yaml")):
+            with open(config_file) as f:
+                config = yaml.safe_load(f)
+            if not isinstance(config, dict):
+                continue
+            unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
+            if unknown:
+                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+        assert not problems, "\n".join(problems)

@@ -10,8 +10,17 @@ Tests cover:
 - Multiple timezone DST transitions (US, Europe, Southern Hemisphere)
 """
 
+from typing import cast
+
 import pytest
 import pendulum
+
+
+def _parse(date_str: str, tz: str) -> pendulum.DateTime:
+    """Typed wrapper: pendulum.parse() returns Date|Time|DateTime|Duration per
+    its stubs, but a date-only string with an explicit tz always yields a
+    DateTime at runtime."""
+    return cast(pendulum.DateTime, pendulum.parse(date_str, tz=tz))
 
 
 class TestSpringForwardTransitions:
@@ -28,7 +37,7 @@ class TestSpringForwardTransitions:
     def test_parse_date_before_spring_forward(self, timezone, spring_forward_date):
         """Parse date before spring forward transition."""
         # Day before spring forward
-        dt_before = pendulum.parse(spring_forward_date, tz=timezone).subtract(days=1)
+        dt_before = _parse(spring_forward_date, tz=timezone).subtract(days=1)
         
         # Should be in standard time (not DST)
         assert not dt_before.is_dst()
@@ -42,7 +51,7 @@ class TestSpringForwardTransitions:
     def test_parse_date_after_spring_forward(self, timezone, spring_forward_date):
         """Parse date after spring forward transition."""
         # Day after spring forward
-        dt_after = pendulum.parse(spring_forward_date, tz=timezone).add(days=1)
+        dt_after = _parse(spring_forward_date, tz=timezone).add(days=1)
         
         # Should be in daylight saving time
         assert dt_after.is_dst()
@@ -83,7 +92,7 @@ class TestFallBackTransitions:
     def test_parse_date_before_fall_back(self, timezone, fall_back_date):
         """Parse date before fall back transition."""
         # Day before fall back
-        dt_before = pendulum.parse(fall_back_date, tz=timezone).subtract(days=1)
+        dt_before = _parse(fall_back_date, tz=timezone).subtract(days=1)
         
         # Should still be in DST
         assert dt_before.is_dst()
@@ -97,7 +106,7 @@ class TestFallBackTransitions:
     def test_parse_date_after_fall_back(self, timezone, fall_back_date):
         """Parse date after fall back transition."""
         # Day after fall back
-        dt_after = pendulum.parse(fall_back_date, tz=timezone).add(days=1)
+        dt_after = _parse(fall_back_date, tz=timezone).add(days=1)
         
         # Should be in standard time (not DST)
         assert not dt_after.is_dst()
@@ -123,7 +132,11 @@ class TestFallBackTransitions:
         dt_second = pendulum.datetime(2024, 11, 3, 1, 30, tz=timezone, fold=1)
         assert not dt_second.is_dst()
         
-        # Both represent the same wall time but different UTC times`n        # Convert to UTC to verify they're different moments`n        dt_first_utc = dt_first.in_timezone("UTC")`n        dt_second_utc = dt_second.in_timezone("UTC")`n        assert dt_first_utc < dt_second_utc
+        # Both represent the same wall time but different UTC times
+        # Convert to UTC to verify they're different moments
+        dt_first_utc = dt_first.in_timezone("UTC")
+        dt_second_utc = dt_second.in_timezone("UTC")
+        assert dt_first_utc < dt_second_utc
 
 
 class TestCronVsTimedeltaDSTBehavior:
@@ -288,18 +301,18 @@ class TestDSTTransitionDates2024To2026:
         tz = "America/New_York"
         
         # Day before spring forward: EST
-        before_spring = pendulum.parse(spring_date, tz=tz).subtract(days=1).at(12, 0)
+        before_spring = _parse(spring_date, tz=tz).subtract(days=1).at(12, 0)
         assert not before_spring.is_dst()
         
         # Day after spring forward: EDT
-        after_spring = pendulum.parse(spring_date, tz=tz).add(days=1).at(12, 0)
+        after_spring = _parse(spring_date, tz=tz).add(days=1).at(12, 0)
         assert after_spring.is_dst()
         
         # Day before fall back: EDT
-        before_fall = pendulum.parse(fall_date, tz=tz).subtract(days=1).at(12, 0)
+        before_fall = _parse(fall_date, tz=tz).subtract(days=1).at(12, 0)
         assert before_fall.is_dst()
         
         # Day after fall back: EST
-        after_fall = pendulum.parse(fall_date, tz=tz).add(days=1).at(12, 0)
+        after_fall = _parse(fall_date, tz=tz).add(days=1).at(12, 0)
         assert not after_fall.is_dst()
 

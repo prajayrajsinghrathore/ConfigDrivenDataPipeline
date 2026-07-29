@@ -2,7 +2,15 @@ x-airflow-common:
   &airflow-common
   # Using optimised multi-stage build image
   image: configdrivenpipeline:latest
-  build: ..
+  build:
+    context: ..
+    args:
+      # ZScaler CA trust for builds INSIDE the ZScaler-inspected network.
+      # Default false (inert outside). Set USE_ZSCALER_CERT=true in docker/.env
+      # for inside builds. NOTE: pulling the base image THROUGH ZScaler also
+      # requires the Docker DAEMON/host to trust the ZScaler CA — that is host
+      # config, outside this repo (see docker/.env.example).
+      USE_ZSCALER_CERT: ${USE_ZSCALER_CERT:-false}
   env_file:
     - .env
   environment:
@@ -51,8 +59,11 @@ x-airflow-common:
     - ../dags:/opt/airflow/dags
     - ../logs:/opt/airflow/logs
     - ../config:/opt/airflow/config:ro
+    - ../tests:/opt/airflow/tests:ro
     - .:/opt/airflow/docker:ro
-    - ../plugins:/opt/airflow/plugins:ro
+    # NOTE: no plugins mount — deadline notifiers moved into the
+    # rlam_airflow_framework package (shipped in the image). /opt/airflow/plugins
+    # stays as Airflow's (empty) real-plugin folder for any future AirflowPlugin.
     # Development files for easy package management
     #- ../requirements.txt:/requirements.txt
     # Kubernetes file
@@ -84,7 +95,7 @@ x-airflow-common:
 services:
   postgres:
     # DHI hardened image from ACR
-    image: rlmsbxdpluksacr.azurecr.io/postgres:18-alpine3.22
+    image: dhi.io/postgres:18-alpine3.23-dev
     container_name: postgres
     environment:
       POSTGRES_USER: airflow
@@ -116,8 +127,9 @@ services:
 
   redis:
     # DHI hardened image from ACR
-    image: rlmsbxdpluksacr.azurecr.io/redis:8-debian13-dev
+    image: dhi.io/redis:8-debian-dev
     container_name: redis
+    command: redis-server --save 20 1 --loglevel warning --protected-mode no
     expose:
       - 6379
     healthcheck:
@@ -148,7 +160,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/public/version')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -164,7 +176,7 @@ services:
     container_name: airflow-scheduler
     command: scheduler
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8974/health')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -199,7 +211,8 @@ services:
       # yamllint disable rule:line-length
       test:
         - "CMD-SHELL"
-        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+        # `python -m celery`: the DHI base image does not expose the `celery` console script on PATH
+        - 'python -m celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
       interval: 30s
       timeout: 10s
       retries: 5
@@ -316,11 +329,58 @@ services:
         echo
         ls -la /opt/airflow/{logs,dags,plugins,config}
         echo
+        echo "=== Migrating Database ==="
+        echo
+        airflow db migrate
+        echo
+        echo "=== Creating admin user (custom init bypasses entrypoint _AIRFLOW_WWW_USER_CREATE) ==="
+        echo
+        airflow users create \
+            --username "$${_AIRFLOW_WWW_USER_USERNAME:-airflow}" \
+            --password "$${_AIRFLOW_WWW_USER_PASSWORD:-airflow}" \
+            --firstname Admin --lastname User --role Admin \
+            --email admin@example.com 2>/dev/null || echo "admin user exists"
+        echo
         echo "=== Creating data-steward role for HITL approval workflow ==="
         echo
-        /entrypoint airflow roles create data-steward 2>/dev/null || echo "Role data-steward already exists"
-        echo "data-steward role created - configure permissions via Airflow UI"
+        # FAB resource names verified against ab_view_menu on Airflow 3.3.0 /
+        # FAB provider 3.7.1: 'HITL Detail', 'DAGs', 'DAG Runs', 'Task Instances'.
+        # Reads cover the 3.2.1 /dags endpoint requirements; can_edit on
+        # 'HITL Detail' allows responding to approval tasks.
+        airflow roles create data-steward 2>/dev/null || echo "data-steward role exists"
+        airflow roles add-perms data-steward -a can_read \
+            -r 'DAGs' 'DAG Runs' 'Task Instances' 'HITL Detail' 'Website'
+        airflow roles add-perms data-steward -a can_edit -r 'HITL Detail'
+        airflow users create \
+            --username "$${_AIRFLOW_STEWARD_USERNAME:-steward}" \
+            --password "$${_AIRFLOW_STEWARD_PASSWORD:-steward}" \
+            --firstname Data --lastname Steward --role data-steward \
+            --email steward@example.com 2>/dev/null || echo "steward user exists"
         echo
+        echo "=== Pre-seeding Connections ==="
+        echo
+        airflow connections add 'kafka_default' \
+            --conn-type 'kafka' \
+            --conn-extra '{"bootstrap.servers": "kafka:29092", "security.protocol": "PLAINTEXT"}' 2>/dev/null || echo "kafka_default exists"
+            
+        airflow connections add 'smtp_default' \
+            --conn-type 'smtp' \
+            --conn-host 'smtp.example.com' \
+            --conn-port '587' \
+            --conn-login 'user' \
+            --conn-password 'pass' 2>/dev/null || echo "smtp_default exists"
+            
+        airflow connections add 'snowflake_default' \
+            --conn-type 'snowflake' \
+            --conn-extra '{"account": "test_account", "warehouse": "test_wh", "database": "test_db", "region": "us-east-1"}' 2>/dev/null || echo "snowflake_default exists"
+            
+        airflow connections add 'sftp_default' \
+            --conn-type 'sftp' \
+            --conn-host 'sftp.example.com' \
+            --conn-login 'user' \
+            --conn-password 'pass' 2>/dev/null || echo "sftp_default exists"
+        echo
+
         echo "=== Airflow initialization complete ==="
 
     # yamllint enable rule:line-length
@@ -361,7 +421,7 @@ services:
     ports:
       - "5555:5555"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5555/')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -374,7 +434,7 @@ services:
 
   # Kafka Service (Native KRaft mode - Kafka 4.x, no Zookeeper)
   kafka:
-    image: rlmsbxdpluksacr.azurecr.io/strimzi/kafka:latest-kafka-4.1.1
+    image: quay.io/strimzi/kafka:latest-kafka-4.1.1
     container_name: kafka
     user: "0:0"
     command:
@@ -426,7 +486,7 @@ services:
 
   # Kafka Topic Initialization
   kafka-init:
-    image: rlmsbxdpluksacr.azurecr.io/strimzi/kafka:latest-kafka-4.1.1
+    image: quay.io/strimzi/kafka:latest-kafka-4.1.1
     container_name: kafka-init
     depends_on:
       kafka:
@@ -446,7 +506,7 @@ services:
 
   # Kowl (Kafka UI)
   kowl:
-    image: rlmsbxdpluksacr.azurecr.io/cloudhut/kowl:v1.5.0
+    image: quay.io/cloudhut/kowl:v1.5.0
     container_name: kowl
     restart: always
     ports:
@@ -492,7 +552,7 @@ services:
   # Marquez PostgreSQL Database
   marquez-db:
     # DHI hardened image from ACR
-    image: rlmsbxdpluksacr.azurecr.io/postgres:18-alpine3.22
+    image: dhi.io/postgres:18-alpine3.23-dev
     container_name: marquez-db
     environment:
       POSTGRES_USER: marquez
@@ -516,7 +576,7 @@ services:
 
   # Marquez API Server
   marquez-api:
-    image: rlmsbxdpluksacr.azurecr.io/marquezproject/marquez:0.51.1
+    image: marquezproject/marquez:0.51.1
     container_name: marquez-api
     ports:
       - "5000:5000"   # API
@@ -549,7 +609,7 @@ services:
 
   # Marquez Web UI
   marquez-web:
-    image: rlmsbxdpluksacr.azurecr.io/marquezproject/marquez-web:0.51.1
+    image: marquezproject/marquez-web:0.51.1
     container_name: marquez-web
     ports:
       - "3001:3000"

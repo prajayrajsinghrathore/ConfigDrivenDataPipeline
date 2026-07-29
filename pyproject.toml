@@ -19,8 +19,8 @@ keywords = ["airflow", "etl", "data-pipeline", "config-driven", "rlam"]
 
 # Runtime dependencies - match your requirements.txt
 dependencies = [
-    "apache-airflow>=3.1.6",
-    "apache-airflow-task-sdk>=1.1.6",
+    "apache-airflow>=3.3.0",
+    "apache-airflow-task-sdk>=1.3.0",
     "pandas>=2.4.2",
     "numpy>=2.4.2",
     "pyyaml>=6.0.2",
@@ -56,7 +56,7 @@ ssh = [
     "paramiko>=3.5.0",
 ]
 http = [
-    "apache-airflow-providers-http>=4.14.1",
+    "apache-airflow-providers-http>=6.0.4",
 ]
 all = [
     "rlam-airflow-framework[snowflake,azure,kafka,ssh,http]",
@@ -78,7 +78,16 @@ Repository = "https://dev.azure.com/rlam/DataPlatform/_git/airflow-framework"
 
 # Setuptools configuration
 [tool.setuptools]
-packages = ["rlam_airflow_framework"]
+packages = [
+    "rlam_airflow_framework",
+    "rlam_airflow_framework.destinations",
+    "rlam_airflow_framework.data_quality",
+    "rlam_airflow_framework.data_fetchers",
+    "rlam_airflow_framework.transformers",
+    "rlam_airflow_framework.transformers.enrichments",
+    "rlam_airflow_framework.formula_engine",
+    "rlam_airflow_framework.formula_engine.evaluators",
+]
 
 [tool.setuptools.package-data]
 rlam_airflow_framework = ["py.typed"]
@@ -93,3 +102,6 @@ markers = [
     "integration: Integration tests",
     "contract: Contract tests",
 ]
+
+[tool.pyright]
+extraPaths = []

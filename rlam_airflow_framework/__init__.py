@@ -14,13 +14,36 @@ Usage:
     from rlam_airflow_framework import ConfigLoader, DAGFactoryV2
 """
 
+# Windows compatibility patch (inert on Linux/macOS): Airflow 3.3.0 calls
+# os.register_at_fork unconditionally at import (airflow.sdk _shared stats), which
+# does not exist on Windows. Stub it for local development.
+import os
+
+if not hasattr(os, "register_at_fork"):
+    # Pre-import concurrent.futures.thread BEFORE stubbing: its module body takes a
+    # POSIX-only branch when os.register_at_fork exists and crashes on Windows
+    # (`_thread.lock` has no `_at_fork_reinit`). Importing it first caches the module
+    # so later `from concurrent.futures import ThreadPoolExecutor` keeps working.
+    import concurrent.futures.thread  # noqa: F401
+
+    os.register_at_fork = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+
 __version__ = "1.0.0"
 __author__ = "RLAM Data Platform Team"
 
 # Export commonly used classes for convenience
-from rlam_airflow_framework.config_loader import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
 from rlam_airflow_framework.dag_factory_v2 import DAGFactoryV2
 from rlam_airflow_framework.tenant_context import TenantContext, TenantValidationError
+
+# Destination strategy extension point: register custom sinks via
+# DESTINATION_REGISTRY.register(MyLoader()) where MyLoader subclasses DestinationLoader.
+from rlam_airflow_framework.destinations import (
+    DestinationLoader,
+    DestinationRegistry,
+    DESTINATION_REGISTRY,
+    LoadContext,
+)
 
 __all__ = [
     "ConfigLoader",
@@ -28,6 +51,10 @@ __all__ = [
     "DAGFactoryV2",
     "TenantContext",
     "TenantValidationError",
+    "DestinationLoader",
+    "DestinationRegistry",
+    "DESTINATION_REGISTRY",
+    "LoadContext",
     "__version__",
     "__author__",
 ]

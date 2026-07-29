@@ -1,15 +1,45 @@
-# Schema for transformation configurations
+# Schema for the unified pipeline transformations list.
+#
+# `transformations` is an ORDERED list of steps executed sequentially by
+# rlam_airflow_framework.transformers.apply_pipeline_transformations. Each
+# step is a dict with a `type` key selecting the Transformer strategy
+# (rlam_airflow_framework/transformers/) plus whatever fields that
+# transformer reads. Because it's one list, manipulations and enrichments
+# can be freely interleaved - e.g. filter *after* a Snowflake lookup.
+#
+# Example:
+#   transformations:
+#     - type: type_cast
+#       columns:
+#         trade_date: datetime
+#         quantity: float
+#     - type: snowflake_lookup
+#       connection_id: snowflake-default
+#       table: REFERENCE.INSTRUMENTS
+#       join_on: {instrument_id: INSTRUMENT_ID}
+#       select_columns: [ISIN, SECTOR]
+#     - type: formula
+#       columns:
+#         total_value: quantity * price
+#     - type: filter
+#       condition: "quantity > 0"
 
-transformation:
-  optional_fields:
-    - column_types
-    - new_columns
-    - filters
-    - aggregations
-    - joins
-    - custom_transform
+transformations:
+  supported_types:
+    - type_cast
+    - formula
+    - filter
+    - aggregation
+    - snowflake_lookup
 
-column_types:
+type_cast:
+  # TypeCastTransformer (rlam_airflow_framework/transformers/type_cast.py)
+  # Format: columns: {column_name: dtype}
+  fields:
+    columns:
+      type: object
+      required: true
+      description: "Map of column name -> target dtype"
   allowed_types:
     - string
     - int
@@ -17,10 +47,11 @@ column_types:
     - datetime
     - boolean
 
-new_columns:
-  # Format: column_name: formula
+formula:
+  # FormulaTransformer (rlam_airflow_framework/transformers/formula.py)
+  # Format: columns: {new_column_name: formula}
   # Formulas use the safe Formula Engine with whitelisted functions.
-  # 
+  #
   # Available functions:
   #
   # MATH FUNCTIONS:
@@ -80,9 +111,14 @@ new_columns:
   #   and, or, not
   #
   # Examples:
+  fields:
+    columns:
+      type: object
+      required: true
+      description: "Map of new/overwritten column name -> formula expression"
   examples:
     - "quantity * price"                              # Multiplication
-    - "price - cost"                                  # Subtraction  
+    - "price - cost"                                  # Subtraction
     - "(price - cost) / price * 100"                  # Complex math
     - "upper(customer_name)"                          # Uppercase
     - "concat(first_name, ' ', last_name)"            # Concatenation
@@ -91,7 +127,7 @@ new_columns:
     - "coalesce(preferred_name, first_name, 'N/A')"   # Null handling
     - "year(order_date)"                              # Extract year
     - "round(total_amount, 2)"                        # Rounding
-  
+
   # Legacy pandas-style formulas are auto-converted:
   legacy_support:
     - "field.str.upper()"      # -> upper(field)
@@ -100,9 +136,75 @@ new_columns:
     - "field.dt.year"          # -> year(field)
     - "np.where(cond, t, f)"   # -> if_else(cond, t, f)
 
+filter:
+  # FilterTransformer (rlam_airflow_framework/transformers/filter.py)
+  # Format: condition: <boolean formula expression>
+  # One condition per step; chain multiple `filter` steps for multiple
+  # conditions. Evaluated via the same safe Formula Engine as `formula`.
+  fields:
+    condition:
+      type: string
+      required: true
+      description: "Boolean formula expression, e.g. 'quantity > 0'"
+  examples:
+    - "quantity > 0"
+    - "status == 'ACTIVE'"
+    - "between(amount, 0, 1000)"
+
+aggregation:
+  # AggregationTransformer (rlam_airflow_framework/transformers/aggregation.py)
+  # Format: aggregations: {function: [columns]}
+  # Collapses the DataFrame to a single summary row; output columns are
+  # named "{column}_{function}".
+  fields:
+    aggregations:
+      type: object
+      required: true
+      description: "Map of aggregate function -> list of columns"
+  supported_functions:
+    - sum
+    - mean
+    - count
+    - min
+    - max
+    - std
+    - median
+
+snowflake_lookup:
+  # SnowflakeLookupTransformer (rlam_airflow_framework/transformers/enrichments/snowflake.py)
+  # Enriches the DataFrame with columns looked up from a Snowflake table,
+  # via a SQL-injection-safe IN-list query on `join_on`.
+  required_fields:
+    - table
+    - join_on
+    - select_columns
+  optional_fields:
+    - connection_id
+  fields:
+    connection_id:
+      type: string
+      required: false
+      default: "snowflake-default"
+      description: "Airflow connection ID for Snowflake"
+    table:
+      type: string
+      required: true
+      description: "Fully-qualified Snowflake table name, e.g. REFERENCE.INSTRUMENTS"
+    join_on:
+      type: object
+      required: true
+      description: "Single-entry map of {local_dataframe_column: snowflake_column}"
+    select_columns:
+      type: array
+      required: true
+      description: "Snowflake columns to pull into the DataFrame"
+
 custom_transform:
   # Execute custom transformation logic from an external Python file.
   # Use this for complex business logic that cannot be expressed in formulas.
+  #
+  # NOTE: not yet implemented as a Transformer strategy - documented for
+  # forward compatibility only.
   #
   # The Python file must contain a function that:
   #   - Takes a pandas DataFrame as first argument
@@ -110,7 +212,7 @@ custom_transform:
   #   - Can accept additional keyword arguments from 'kwargs'
   #
   # Example config:
-  #   custom_transform:
+  #   - type: custom_transform
   #     python_file: "transforms/order_processing.py"
   #     function: "apply_business_rules"
   #     kwargs:
@@ -139,23 +241,3 @@ custom_transform:
       type: object
       required: false
       description: "Keyword arguments to pass to the function"
-
-filters:
-  # Format: field_name: condition
-  supported_conditions:
-    - "> value"     # Greater than
-    - "< value"     # Less than
-    - ">= value"    # Greater than or equal
-    - "<= value"    # Less than or equal
-    - "!= value"    # Not equal
-    - "== value"    # Equal
-
-aggregations:
-  supported_functions:
-    - sum
-    - mean
-    - count
-    - min
-    - max
-    - std
-    - median

@@ -1,4 +1,10 @@
 # Global settings for local development
+platform:
+  # Max multiple of a tenant's pool slots that its aggregate declared
+  # concurrency (sum of max_active_runs * max_fan_out across all its
+  # partitioned pipelines) may reach before admission control warns/fails.
+  max_tenant_oversubscription: 5
+
 default_args:
   owner: airflow
   depends_on_past: false
@@ -9,9 +15,15 @@ default_args:
 tenants:
   testing:
     pool: default_pool
+    slots: 8
     connection_prefix: test_
+  sandbox:
+    pool: default_pool
+    slots: 16
+    connection_prefix: sandbox_
   development:
     pool: default_pool
+    slots: 16
     connection_prefix: dev_
 
 kafka:

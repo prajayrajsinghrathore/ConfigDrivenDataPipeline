@@ -1,11 +1,11 @@
 # Simple test data source for local development
-name: simple_test
-description: Simple test API for local DAG generation testing
-source_type: http
-
+# 2026-07-23: migrated off the legacy top-level layout — the old top-level
+# name/source_type/retries/data_quality_checks keys were never read by the
+# factory (dead config). Add a `validation:` block if DQ is wanted.
 metadata:
   tenant: testing
   owner: data-engineering
+  description: Simple test API for local DAG generation testing
   tags:
     - test
 
@@ -13,8 +13,8 @@ schedule:
   interval: "0 9 * * *"
   start_date: "2024-01-01"
   catchup: false
-
-retries: 1
+  retry:
+    max_retries: 1
 
 data_source:
   name: simple_test
@@ -27,10 +27,3 @@ data_source:
 destination:
   type: local_file
   path: /tmp/airflow_output/simple_test.json
-
-data_quality_checks:
-  enabled: true
-  rules:
-    - name: not_null
-      column: value
-      type: not_null

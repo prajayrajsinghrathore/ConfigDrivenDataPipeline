@@ -14,18 +14,16 @@ Uses confluent-kafka library for Kafka 4.x (KRaft mode) compatibility.
 
 from __future__ import annotations
 
+import atexit
 import json
 import structlog
 import threading
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 from confluent_kafka import Producer, KafkaException
 import os
 import time
 from enum import Enum
-
-if TYPE_CHECKING:
-    from utils.tenant_context import TenantContext
 
 log = structlog.get_logger(__name__)
 
@@ -40,12 +38,22 @@ KAFKA_FLUSH_TIMEOUT = int(os.getenv("TIMEOUT_KAFKA_FLUSH", "10"))
 KAFKA_SOCKET_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_SOCKET", "5")) * 1000  # Convert to ms
 KAFKA_MESSAGE_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_MESSAGE", "10")) * 1000  # Convert to ms
 KAFKA_CIRCUIT_RECOVERY_TIMEOUT = float(os.getenv("TIMEOUT_KAFKA_CIRCUIT_RECOVERY", os.getenv("KAFKA_CIRCUIT_RECOVERY_TIMEOUT", "30.0")))
+# How long librdkafka waits to fill a batch before sending it (ms). Each
+# publish_* call used to force a full flush() immediately after produce(),
+# turning every single event into its own blocking network round-trip and
+# defeating librdkafka's internal batching. produce() now just enqueues and
+# lets the background sender coalesce messages up to this delay; flush()
+# only runs once, at close().
+KAFKA_LINGER_MS = int(os.getenv("KAFKA_LINGER_MS", "200"))
 
 # Import tenant context for multi-tenancy support
-try:
-    from utils.tenant_context import TenantContext as TenantContextClass
-except ImportError:
-    TenantContextClass = None
+if TYPE_CHECKING:
+    from rlam_airflow_framework.tenant_context import TenantContext
+else:
+    try:
+        from rlam_airflow_framework.tenant_context import TenantContext
+    except ImportError:
+        TenantContext = None
 
 
 class CircuitState(Enum):
@@ -171,7 +179,7 @@ class KafkaEventPublisher:
         )
 
         # Metrics
-        self._metrics = {
+        self._metrics: Dict[str, Any] = {
             "messages_sent": 0,
             "messages_failed": 0,
             "last_success_time": None,
@@ -179,29 +187,27 @@ class KafkaEventPublisher:
         }
         self._metrics_lock = threading.Lock()
         
-        # Delivery callback results
-        self._delivery_result: Optional[Dict[str, Any]] = None
-        self._delivery_event = threading.Event()
-
     def _delivery_callback(self, err, msg):
-        """Callback for message delivery reports."""
+        """
+        Callback for message delivery reports, invoked asynchronously by
+        librdkafka (via poll()/flush()) once a produced message is actually
+        acked or fails. Circuit breaker and metrics are updated here rather
+        than by blocking on the result in the calling publish_* method, so
+        producing no longer has to wait for delivery to complete.
+        """
         if err is not None:
-            self._delivery_result = {"success": False, "error": str(err)}
             log.error("Message delivery failed", error=str(err))
+            self._circuit_breaker.record_failure()
+            self._update_metrics(success=False)
         else:
-            self._delivery_result = {
-                "success": True,
-                "topic": msg.topic(),
-                "partition": msg.partition(),
-                "offset": msg.offset(),
-            }
             log.debug(
                 "Message delivered",
                 topic=msg.topic(),
                 partition=msg.partition(),
                 offset=msg.offset(),
             )
-        self._delivery_event.set()
+            self._circuit_breaker.record_success()
+            self._update_metrics(success=True)
 
     def _get_producer(self) -> Producer:
         """
@@ -240,6 +246,7 @@ class KafkaEventPublisher:
                     "message.timeout.ms": KAFKA_MESSAGE_TIMEOUT_MS,
                     "enable.idempotence": True,
                     "max.in.flight.requests.per.connection": 1,
+                    "linger.ms": KAFKA_LINGER_MS,
                 }
 
                 self._producer = Producer(config)
@@ -339,6 +346,7 @@ class KafkaEventPublisher:
         status: str = "success",
         correlation_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Publish data to Kafka with circuit breaker protection and optional tenant namespacing.
@@ -383,13 +391,12 @@ class KafkaEventPublisher:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "correlation_id": trace_id,
                 "tenant_id": tenant_id,  # Include tenant in message for downstream consumers
+                # Traceability metadata (e.g. partition_key) for downstream consumers
+                "metadata": metadata or {},
             }, default=str)
 
-            # Reset delivery event and result
-            self._delivery_event.clear()
-            self._delivery_result = None
-
-            # Produce message with callback
+            # Produce message with callback; librdkafka batches this in the
+            # background per linger.ms rather than sending it immediately.
             producer.produce(
                 topic=resolved_topic,
                 key=message_key.encode("utf-8") if message_key else None,
@@ -397,26 +404,24 @@ class KafkaEventPublisher:
                 callback=self._delivery_callback,
             )
 
-            # Flush and wait for delivery
-            producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
+            # Non-blocking: just serve any already-completed delivery
+            # callbacks. Success/failure is recorded asynchronously by
+            # _delivery_callback once the batch is actually sent.
+            producer.poll(0)
 
-            # Check delivery result
-            if self._delivery_result and self._delivery_result.get("success"):
-                self._circuit_breaker.record_success()
-                self._update_metrics(success=True)
-                log.debug(
-                    "Successfully published data",
-                    trace_id=trace_id,
-                    topic=resolved_topic,
-                    tenant=tenant_id
-                )
-                return True
-            else:
-                error_msg = self._delivery_result.get("error", "Unknown error") if self._delivery_result else "No delivery result"
-                log.error("Failed to publish data", trace_id=trace_id, error=error_msg)
-                self._circuit_breaker.record_failure()
-                self._update_metrics(success=False)
-                return False
+            log.debug(
+                "Queued data for publish",
+                trace_id=trace_id,
+                topic=resolved_topic,
+                tenant=tenant_id
+            )
+            return True
+
+        except BufferError as e:
+            log.error("Kafka producer queue full", trace_id=trace_id, error=str(e))
+            self._circuit_breaker.record_failure()
+            self._update_metrics(success=False)
+            return False
 
         except KafkaException as e:
             log.error("Kafka error publishing data", trace_id=trace_id, error=str(e))
@@ -476,7 +481,7 @@ class KafkaEventPublisher:
 
             event = {
                 "event_type": "data_load",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "data_source": {"type": data_source, "name": data_source},
@@ -490,11 +495,8 @@ class KafkaEventPublisher:
             # Create message key using dag_id and task_id
             message_key = f"{dag_id}_{task_id}"
 
-            # Reset delivery event and result
-            self._delivery_event.clear()
-            self._delivery_result = None
-
-            # Produce message with callback
+            # Produce message with callback; librdkafka batches this in the
+            # background per linger.ms rather than sending it immediately.
             producer.produce(
                 topic=self.topic_market_data,
                 key=message_key.encode("utf-8"),
@@ -502,24 +504,21 @@ class KafkaEventPublisher:
                 callback=self._delivery_callback,
             )
 
-            # Flush and wait for delivery
-            producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
+            # Non-blocking: just serve any already-completed delivery
+            # callbacks instead of waiting for this message to be sent.
+            producer.poll(0)
 
-            if self._delivery_result and self._delivery_result.get("success"):
-                log.info(
-                    "Successfully published data load event to Kafka",
-                    topic=self._delivery_result.get("topic"),
-                    partition=self._delivery_result.get("partition"),
-                    offset=self._delivery_result.get("offset"),
-                    dag_id=dag_id,
-                    rows=row_count,
-                )
-                return True
-            else:
-                error_msg = self._delivery_result.get("error", "Unknown error") if self._delivery_result else "No delivery result"
-                log.error("Failed to publish data load event", error=error_msg)
-                return False
+            log.info(
+                "Queued data load event for publish to Kafka",
+                topic=self.topic_market_data,
+                dag_id=dag_id,
+                rows=row_count,
+            )
+            return True
 
+        except BufferError as e:
+            log.error("Kafka producer queue full", error=str(e))
+            return False
         except KafkaException as e:
             log.error("Kafka error publishing data load event", error=str(e))
             return False
@@ -534,7 +533,7 @@ class KafkaEventPublisher:
         event_type: str,
         status: str,
         message: str,
-        execution_date: str,
+        execution_date: Union[str, datetime],
         topic: str,
         metadata: Optional[Dict[str, Any]] = None,
         tenant_id: Optional[str] = None,
@@ -572,7 +571,7 @@ class KafkaEventPublisher:
             # Create event payload
             event = {
                 "event_type": event_type,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "execution_date": execution_date,
@@ -585,11 +584,8 @@ class KafkaEventPublisher:
             # Create message key
             message_key = f"{dag_id}_{task_id}_{event_type}"
 
-            # Reset delivery event and result
-            self._delivery_event.clear()
-            self._delivery_result = None
-
-            # Produce message with callback
+            # Produce message with callback; librdkafka batches this in the
+            # background per linger.ms rather than sending it immediately.
             producer.produce(
                 topic=resolved_topic,
                 key=message_key.encode("utf-8"),
@@ -597,23 +593,22 @@ class KafkaEventPublisher:
                 callback=self._delivery_callback,
             )
 
-            # Flush and wait for delivery
-            producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
+            # Non-blocking: just serve any already-completed delivery
+            # callbacks instead of waiting for this message to be sent.
+            producer.poll(0)
 
-            if self._delivery_result and self._delivery_result.get("success"):
-                log.info(
-                    "Successfully published pipeline event to Kafka",
-                    topic=self._delivery_result.get("topic"),
-                    event_type=event_type,
-                    dag_id=dag_id,
-                    tenant=tenant_id,
-                )
-                return True
-            else:
-                error_msg = self._delivery_result.get("error", "Unknown error") if self._delivery_result else "No delivery result"
-                log.error("Failed to publish pipeline event", error=error_msg)
-                return False
+            log.info(
+                "Queued pipeline event for publish to Kafka",
+                topic=resolved_topic,
+                event_type=event_type,
+                dag_id=dag_id,
+                tenant=tenant_id,
+            )
+            return True
 
+        except BufferError as e:
+            log.error("Kafka producer queue full", error=str(e))
+            return False
         except Exception as e:
             log.error("Error publishing pipeline event", error=str(e))
             return False
@@ -647,11 +642,11 @@ class KafkaEventPublisher:
             # Create event payload with bundle metadata
             event = {
                 "event_type": "data_quality_check",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "execution_date": execution_date.isoformat()
-                if hasattr(execution_date, "isoformat")
+                if isinstance(execution_date, datetime)
                 else str(execution_date)
                 if execution_date
                 else None,
@@ -667,11 +662,8 @@ class KafkaEventPublisher:
             # Create message key
             message_key = f"{dag_id}_{task_id}_quality"
 
-            # Reset delivery event and result
-            self._delivery_event.clear()
-            self._delivery_result = None
-
-            # Produce message with callback
+            # Produce message with callback; librdkafka batches this in the
+            # background per linger.ms rather than sending it immediately.
             producer.produce(
                 topic="data-quality",
                 key=message_key.encode("utf-8"),
@@ -679,31 +671,37 @@ class KafkaEventPublisher:
                 callback=self._delivery_callback,
             )
 
-            # Flush and wait for delivery
-            producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
+            # Non-blocking: just serve any already-completed delivery
+            # callbacks instead of waiting for this message to be sent.
+            producer.poll(0)
 
-            if self._delivery_result and self._delivery_result.get("success"):
-                log.info(
-                    "Successfully published data quality event to Kafka",
-                    check=quality_check,
-                    result=result,
-                    dag_id=dag_id,
-                )
-                return True
-            else:
-                error_msg = self._delivery_result.get("error", "Unknown error") if self._delivery_result else "No delivery result"
-                log.error("Failed to publish data quality event", error=error_msg)
-                return False
+            log.info(
+                "Queued data quality event for publish to Kafka",
+                check=quality_check,
+                result=result,
+                dag_id=dag_id,
+            )
+            return True
 
+        except BufferError as e:
+            log.error("Kafka producer queue full", error=str(e))
+            return False
         except Exception as e:
             log.error("Error publishing data quality event", error=str(e))
             return False
 
     def close(self):
-        """Close the Kafka producer"""
+        """
+        Close the Kafka producer.
+
+        This is the one place that still calls flush() — it's the natural
+        end-of-task/end-of-process batching boundary, ensuring every
+        message queued by publish_* (which no longer blocks per-call) is
+        actually sent before the producer goes away.
+        """
         if self._producer:
             try:
-                self._producer.flush()
+                self._producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
                 log.info("Kafka producer closed")
             except Exception as e:
                 log.error("Error closing Kafka producer", error=str(e))
@@ -711,3 +709,10 @@ class KafkaEventPublisher:
 
 # Global instance
 kafka_publisher = KafkaEventPublisher()
+
+# publish_* now enqueues without blocking (see KAFKA_LINGER_MS above), so
+# something must still flush before the process exits or a message queued
+# right before task completion could be dropped. Each Airflow task instance
+# runs as its own process (`airflow tasks run`), so process-exit is exactly
+# the right per-task flush boundary.
+atexit.register(kafka_publisher.close)

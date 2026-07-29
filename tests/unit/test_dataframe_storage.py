@@ -15,6 +15,7 @@ from rlam_airflow_framework.taskflow_tasks import (
     _load_dataframe,
     _cleanup_dataframe,
 )
+from rlam_airflow_framework.taskflow.storage import DataFrameStorage
 
 
 class TestSaveDataFrame:
@@ -323,3 +324,64 @@ class TestEdgeCases:
         assert "my_task" in filepath
         assert "run_12345" in filepath
         assert filepath.endswith(".parquet")
+
+
+# =============================================================================
+# DataFrameStorage class tests (OOP API)
+# =============================================================================
+
+
+class TestDataFrameStorageClass:
+    """Test the OOP DataFrameStorage class directly (no patching needed)."""
+
+    def test_save_and_load(self, tmp_path):
+        """Round-trip save → load via the class API."""
+        storage = DataFrameStorage(base_dir=tmp_path)
+        df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+
+        filepath = storage.save(df, "task_1", "run_1")
+
+        loaded = storage.load(filepath)
+        pd.testing.assert_frame_equal(df, loaded)
+
+    def test_cleanup(self, tmp_path):
+        """cleanup() should remove the file."""
+        storage = DataFrameStorage(base_dir=tmp_path)
+        df = pd.DataFrame({"col": [1]})
+        filepath = storage.save(df, "task_2", "run_2")
+
+        assert Path(filepath).exists()
+        storage.cleanup(filepath)
+        assert not Path(filepath).exists()
+
+    def test_save_creates_directory(self, tmp_path):
+        """If the base_dir doesn't exist yet, save() creates it."""
+        nested = tmp_path / "sub" / "deep"
+        storage = DataFrameStorage(base_dir=nested)
+        df = pd.DataFrame({"v": [10]})
+
+        filepath = storage.save(df, "task_3", "run_3")
+        assert Path(filepath).exists()
+
+    def test_base_dir_property(self, tmp_path):
+        storage = DataFrameStorage(base_dir=tmp_path)
+        assert storage.base_dir == tmp_path
+
+    def test_cleanup_nonexistent_no_error(self, tmp_path):
+        """cleanup() on a missing file should not raise."""
+        storage = DataFrameStorage(base_dir=tmp_path)
+        storage.cleanup(str(tmp_path / "ghost.parquet"))  # no error
+
+    def test_multiple_saves_isolated(self, tmp_path):
+        """Different task/run combos produce different files."""
+        storage = DataFrameStorage(base_dir=tmp_path)
+        df1 = pd.DataFrame({"x": [1]})
+        df2 = pd.DataFrame({"x": [2]})
+
+        p1 = storage.save(df1, "t1", "r1")
+        p2 = storage.save(df2, "t2", "r1")
+
+        assert p1 != p2
+        pd.testing.assert_frame_equal(storage.load(p1), df1)
+        pd.testing.assert_frame_equal(storage.load(p2), df2)
+

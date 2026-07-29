@@ -1,0 +1,25 @@
+# TEMPORARY validation probe (Phase 3B.4): incremental two-run e2e against the
+# controllable mock-api container (scripts/mock_api.py). Keep paused when not
+# actively validating; requires the mock-api container on the compose network.
+metadata:
+  tenant: sandbox
+  description: "Incremental e2e probe: delta fetch via watermark param against mock API"
+data_source:
+  name: incremental_probe
+  type: rest_api
+  endpoint: http://mock-api:8000/items
+schedule:
+  interval: null
+  start_date: "2024-01-01"
+  retry:
+    policy: transient
+    max_retries: 2
+    retry_delay_seconds: 60
+incremental:
+  enabled: true
+  watermark_column: id
+  initial_watermark: "0"
+  strict: true
+destination:
+  primary:
+    type: print_logs

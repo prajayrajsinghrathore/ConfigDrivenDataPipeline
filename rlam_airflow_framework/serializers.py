@@ -7,13 +7,15 @@ Registers pandas DataFrame serialization for XCom exchange between tasks.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import cast
 
-from airflow.utils.module_loading import qualname
-
-if TYPE_CHECKING:
+try:
+    from airflow.utils.module_loading import qualname  # type: ignore[import-not-found]
+except ImportError:
+    # Airflow 3
+    from airflow.sdk._shared.module_loading import qualname
     import pandas as pd
-    from airflow.serialization.serde import U
+    from airflow.sdk.serde import U
 
 
 serializers = ["pandas.DataFrame"]
@@ -74,11 +76,12 @@ def deserialize(cls: type, version: int, data: object) -> pd.DataFrame:
         raise TypeError(f"do not know how to deserialize {qualname(cls)}")
     
     # Reconstruct DataFrame from split-oriented dict
-    df_data = data["data"]
+    payload = cast(dict, data)
+    df_data = payload["data"]
     df = pd.DataFrame(**df_data)
-    
+
     # Restore original dtypes
-    dtypes = data.get("dtypes", {})
+    dtypes = payload.get("dtypes", {})
     for col, dtype_str in dtypes.items():
         if col in df.columns:
             try:

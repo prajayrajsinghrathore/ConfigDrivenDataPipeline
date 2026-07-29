@@ -1,0 +1,25 @@
+metadata:
+  tenant: testing
+  description: "Reference configuration for a partitioned pipeline"
+
+data_source:
+  name: reference_partitioned_src
+  type: rest_api
+  endpoint: https://api.example.com/data
+  response_format: json
+
+schedule:
+  interval: null
+
+partition:
+  enabled: true
+  runtime_assigned: true
+  granularity: day
+  mapper: fan_out
+  # Capped to the 'testing' tenant's pool size (8 slots, config/global_settings.yaml)
+  # - the fan_out mapper default of 64 would massively over-subscribe it.
+  max_fan_out: 8
+
+destination:
+  primary:
+    type: print_logs

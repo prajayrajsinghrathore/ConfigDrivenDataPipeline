@@ -19,7 +19,8 @@ import threading
 from unittest.mock import patch
 
 # Import actual implementation
-from rlam_airflow_framework.config_loader import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config.reader import load_yaml_file
 
 
 class TestConfigLoaderEmptyFiles:
@@ -36,8 +37,8 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
-                result = loader._load_yaml_file(str(empty_file))
+                ConfigLoader(config_dir=str(config_dir))
+                result = load_yaml_file(str(empty_file))
 
         assert result is None
 
@@ -55,8 +56,8 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
-                result = loader._load_yaml_file(str(comments_file))
+                ConfigLoader(config_dir=str(config_dir))
+                result = load_yaml_file(str(comments_file))
 
         assert result is None
 
@@ -71,8 +72,8 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
-                result = loader._load_yaml_file(str(whitespace_file))
+                ConfigLoader(config_dir=str(config_dir))
+                result = load_yaml_file(str(whitespace_file))
 
         assert result is None
 
@@ -139,10 +140,10 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError) as exc_info:
-                    loader._load_yaml_file(str(invalid_file))
+                    load_yaml_file(str(invalid_file))
 
                 assert "Invalid YAML syntax" in str(exc_info.value)
 
@@ -157,11 +158,11 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 # Should either parse or raise ConfigLoadError
                 try:
-                    result = loader._load_yaml_file(str(tab_file))
+                    result = load_yaml_file(str(tab_file))
                     # Some YAML parsers accept tabs
                     assert isinstance(result, dict)
                 except ConfigLoadError:
@@ -182,10 +183,11 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
-                result = loader._load_yaml_file(str(dup_file))
+                ConfigLoader(config_dir=str(config_dir))
+                result = load_yaml_file(str(dup_file))
 
         # YAML spec: last value wins for duplicate keys
+        assert result is not None
         assert result["data_source"]["name"] == "second_name"
 
     def test_yaml_with_circular_reference_anchor(self, tmp_path):
@@ -202,12 +204,13 @@ data_source: &source
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 # PyYAML's safe_load should handle this
                 try:
-                    result = loader._load_yaml_file(str(circular_file))
+                    result = load_yaml_file(str(circular_file))
                     # If it parses, it creates a reference (not truly circular in safe_load)
+                    assert result is not None
                     assert "data_source" in result
                 except (ConfigLoadError, yaml.YAMLError):
                     # Also acceptable to reject
@@ -454,10 +457,11 @@ destination:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 # PyYAML handles BOM, but we should test it
                 try:
-                    result = loader._load_yaml_file(str(bom_file))
+                    result = load_yaml_file(str(bom_file))
+                    assert result is not None
                     assert "data_source" in result
                 except ConfigLoadError:
                     # Some implementations may reject BOM
@@ -474,10 +478,10 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError) as exc_info:
-                    loader._load_yaml_file(str(config_dir / "nonexistent.yaml"))
+                    load_yaml_file(str(config_dir / "nonexistent.yaml"))
 
                 assert "File not found" in str(exc_info.value)
 
@@ -488,10 +492,10 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError):
-                    loader._load_yaml_file("")
+                    load_yaml_file("")
 
     def test_none_filepath_raises_error(self, tmp_path):
         """Test None filepath raises ConfigLoadError."""
@@ -500,10 +504,10 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError):
-                    loader._load_yaml_file(None)
+                    load_yaml_file(None)  # type: ignore[arg-type]
 
     def test_nonexistent_data_sources_directory(self, tmp_path):
         """Test handling of nonexistent data_sources directory."""
@@ -521,7 +525,7 @@ class TestConfigLoaderFileErrors:
     def test_none_config_dir_raises_error(self):
         """Test None config_dir raises ValueError."""
         with pytest.raises(ValueError) as exc_info:
-            ConfigLoader(config_dir=None)
+            ConfigLoader(config_dir=None)  # type: ignore[arg-type]
 
         assert "cannot be None or empty" in str(exc_info.value)
 
@@ -832,10 +836,10 @@ class TestConfigLoadErrorException:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 try:
-                    loader._load_yaml_file(str(invalid_file))
+                    load_yaml_file(str(invalid_file))
                 except ConfigLoadError as e:
                     # Should have __cause__ set
                     assert e.__cause__ is not None or e.original_error is not None

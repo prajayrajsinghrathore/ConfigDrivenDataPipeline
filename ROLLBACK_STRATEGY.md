@@ -222,3 +222,66 @@ helm upgrade airflow apache-airflow/airflow \
 - [ ] Re-run failed DAGs if needed
 - [ ] Document rollback in incident log
 - [ ] Create fix and deploy new version
+
+## Rerun Behavior (`rerun_with_latest_version`)
+
+By default in Airflow 3.3.0, retrying a failed task or clearing a DAG Run executes the task against its original bound DAG version. This ensures deterministic behavior and reproducibility.
+
+However, if a pipeline failed due to a bug in the code or a misconfiguration, you might want the retry to execute the *fixed* version rather than the original buggy version.
+
+### How to use `rerun_with_latest_version`
+
+You can control this behavior via the pipeline YAML configuration `metadata` block:
+
+```yaml
+metadata:
+  tenant: marketing
+  owner: data-eng
+  rerun_with_latest_version: true
+```
+
+- `rerun_with_latest_version: false` (Default): Retries use the historical bound version.
+- `rerun_with_latest_version: true`: Retries will "upgrade" the DAG Run to the latest DAG version and execute the new logic.
+
+### Operational Guidelines
+
+1. **For transient failures (API timeouts, DB locks):** Leave `rerun_with_latest_version: false`. The existing logic is correct, and the failure is environmental.
+2. **For logic bugs (incorrect transformations, wrong schemas):**
+   - Push a fix to the DAG bundle.
+   - Update the configuration to set `rerun_with_latest_version: true`.
+   - Clear the failed tasks. They will pick up the new logic.
+   - Once the backfill or recovery is complete, it is recommended to revert `rerun_with_latest_version` back to `false` for stability.
+
+## Airflow Metadata-DB Version Rollback (3.3.0 → 3.1.6)
+
+**Rehearsed 2026-07-23** on a throwaway copy of the live 3.3.0 metadata DB
+(Postgres, `pg_dump | psql` into `airflow_rollback_test`), per Phase 0 Task 0.9.
+
+```bash
+# 1. Clone the metadata DB (never downgrade the live DB directly)
+docker exec postgres sh -c "createdb -U airflow airflow_rollback_test \
+  && pg_dump -U airflow airflow | psql -q -U airflow airflow_rollback_test"
+
+# 2. Downgrade the copy
+docker exec -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=\
+"postgresql+psycopg2://airflow:airflow@postgres/airflow_rollback_test" \
+  airflow-scheduler airflow db downgrade --to-version 3.1.6 -y
+```
+
+**Observed result:**
+- Alembic head moved `d2f4e1b3c5a7` (3.3.0) → `cc92b33c6709` (3.1.6).
+- 3.2.x/3.3.0 objects dropped cleanly, including `task_state_store` and the
+  `retry_delay_override`/`retry_reason` TI columns.
+- Deadline JSON conversion reversed ("Total migrated: 0 deadline records" —
+  no deadline rows existed at rehearsal time; a populated DB would convert them).
+- Round trip verified: `airflow db migrate` on the downgraded copy returned to
+  `d2f4e1b3c5a7` with `task_state_store` recreated.
+
+**Caveats:**
+- Downgrading discards all data stored in 3.2.x/3.3.0-only tables/columns
+  (state-store watermarks/DQ provenance, retry reasons, HITL detail rows added
+  after the downgrade point). Export anything you need first.
+- Code and DB must move together: a 3.1.6 DB with 3.3.0 images (or vice versa)
+  will fail at startup. Roll back the image tag and the DB in the same window.
+- Nothing is deployed to production yet, so this remains a rehearsal artifact;
+  re-run it against a production-shaped dump before the first real deployment.

@@ -1,0 +1,23 @@
+# TEMPORARY validation probe (Phase 3B.4): partition fan-out e2e. Runs are
+# triggered with an explicit partition_key (PartitionedAtRuntime); the fetch is
+# scoped to the partition via the event_date request param against mock-api.
+# Keep paused when not actively validating.
+metadata:
+  tenant: sandbox
+  description: "Partition e2e probe: runtime-assigned partitions against mock API"
+  rerun_with_latest_version: true
+data_source:
+  name: partition_probe
+  type: rest_api
+  endpoint: http://mock-api:8000/data
+schedule:
+  interval: null
+partition:
+  enabled: true
+  runtime_assigned: true
+  granularity: day
+  mapper: fan_out
+  column: event_date
+destination:
+  primary:
+    type: print_logs

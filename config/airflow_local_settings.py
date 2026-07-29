@@ -1,4 +1,4 @@
-﻿"""
+"""
 Airflow Local Settings - Logging Configuration
 
 This file configures custom logging behavior for the RLAM Airflow pipeline.
@@ -120,17 +120,15 @@ REMOTE_TASK_LOG = None
 # Register custom serializers for pandas DataFrames and other objects
 # This allows DataFrames to be passed between tasks via XCom
 
-# Import and register the custom DataFrame serializer
-try:
-    from airflow.serialization.serde import register
-    from rlam_airflow_framework import serializers
-    
-    # Register the DataFrame serializer module
-    register(serializers)
-    
-    print("[airflow_local_settings] Registered custom DataFrame serializer")
-except Exception as e:
-    print(f"[airflow_local_settings] WARNING: Failed to register custom serializers: {e}")
+# Import the custom DataFrame serializer
+from rlam_airflow_framework import serializers  # noqa: E402
+import airflow.sdk.serde  # noqa: E402
+
+# Register the DataFrame serializer module manually
+airflow.sdk.serde._serializers["pandas.DataFrame"] = serializers
+airflow.sdk.serde._deserializers["pandas.DataFrame"] = serializers
+
+print("[airflow_local_settings] Registered custom DataFrame serializer")
 
 print(f"[airflow_local_settings] Loaded custom logging config for environment: {ENV}")
 print(f"[airflow_local_settings] Structlog output format: {'JSON' if IS_PRODUCTION else 'Console'}")

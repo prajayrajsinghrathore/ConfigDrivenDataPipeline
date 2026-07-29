@@ -1,11 +1,11 @@
-# Joke API test for local development
-name: joke_api_test
-description: Test data source for validating TaskFlow API integration
-source_type: http
-
+# Joke API test for local development (smoke pipeline for e2e runs)
+# 2026-07-23: migrated off the legacy top-level layout — the old top-level
+# name/source_type/retries/transformations/data_quality_checks keys were never
+# read by the factory (dead config). Add a `validation:` block if DQ is wanted.
 metadata:
   tenant: testing
   owner: data-engineering
+  description: Test data source for validating TaskFlow API integration
   tags:
     - test
     - http-api
@@ -14,8 +14,8 @@ schedule:
   interval: "0 10 * * *"
   start_date: "2024-01-01"
   catchup: false
-
-retries: 2
+  retry:
+    max_retries: 2
 
 data_source:
   name: joke_api_test
@@ -28,21 +28,3 @@ data_source:
 destination:
   type: local_file
   path: /tmp/airflow_output/joke_api_test.json
-
-transformations:
-  - type: add_column
-    column_name: processed_at
-    formula: "NOW()"
-  - type: add_column
-    column_name: joke_type
-    formula: "type"
-
-data_quality_checks:
-  enabled: true
-  rules:
-    - name: setup_not_null
-      column: setup
-      type: not_null
-    - name: punchline_not_null
-      column: punchline
-      type: not_null

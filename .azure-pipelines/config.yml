@@ -1,4 +1,14 @@
-# Azure DevOps Pipeline for Airflow Config Repository
+# Azure DevOps Pipeline for the Airflow CONFIG Repository (pipeline YAMLs).
+#
+# SCOPE (Phase 3 Task 3C.4): this pipeline belongs in the SEPARATE config repo
+# (e.g. AirrflowConfigBundle), NOT the engine repo. It validates each pipeline
+# config against the schema contract, rejects bad configs before they can be
+# tagged, and publishes/tags a deployable revision that the AKS GitDagBundle
+# pulls by tag. The schema + contract tests it runs are ENGINE artifacts
+# (config/schemas/data_source_schema.yaml, tests/contract/) that the config repo
+# must vendor or depend on. The engine repo's own CI (test lanes + image build)
+# is .azure-pipelines/ci.yml.
+#
 # This pipeline validates, tests, and versions configuration files for DAG Bundles
 
 trigger:
