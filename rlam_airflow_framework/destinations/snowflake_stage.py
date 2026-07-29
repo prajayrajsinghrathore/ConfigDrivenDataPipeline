@@ -4,15 +4,19 @@
 import os
 import tempfile
 import time
-from datetime import datetime
 from typing import cast
 
 import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
-from rlam_airflow_framework.validation import validate_identifier
+from rlam_airflow_framework.utils.validation import validate_identifier
 from rlam_airflow_framework.destinations.base import DestinationLoader
-from rlam_airflow_framework.destinations.primitives import DataLoadError
+from rlam_airflow_framework.destinations.primitives import (
+    DataLoadError,
+    TransientDataLoadError,
+    is_transient_snowflake_error,
+    sanitize_for_filename,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -26,9 +30,11 @@ class SnowflakeStageLoader(DestinationLoader):
         stage_name = validate_identifier(
             dest_config.get("stage_name", "DATA_STAGE"), "stage name"
         )
-        file_name = dest_config.get(
-            "file_name", f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        )
+        # Deterministic per-task-instance suffix (not wall-clock) so retries
+        # and cleared task instances overwrite the same staged file instead
+        # of producing a duplicate that downstream consumers double-count.
+        run_token = sanitize_for_filename(ctx.correlation_id)
+        file_name = dest_config.get("file_name", f"data_{run_token}.csv")
         file_format = dest_config.get("format", "csv")
         snowflake_conn_id = dest_config.get("connection_id", "snowflake-default")
         logger = _log.bind(trace_id=ctx.correlation_id)
@@ -49,13 +55,12 @@ class SnowflakeStageLoader(DestinationLoader):
         else:
             raise ValueError(f"Unsupported format: {file_format}. Supported: csv, json")
 
-        date_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name, ext = os.path.splitext(file_name)
         if not ext:
             ext = f".{file_format}"
-        dated_file_name = f"{base_name}_{date_suffix}{ext}"
+        run_scoped_file_name = f"{base_name}_{run_token}{ext}"
 
-        tmp_file_path = os.path.join(tempfile.gettempdir(), dated_file_name)
+        tmp_file_path = os.path.join(tempfile.gettempdir(), run_scoped_file_name)
 
         try:
             start_time = time.time()
@@ -73,14 +78,19 @@ class SnowflakeStageLoader(DestinationLoader):
 
             elapsed = time.time() - start_time
             logger.info(
-                f"Successfully uploaded to stage {stage_full_path}/{dated_file_name}, "
+                f"Successfully uploaded to stage {stage_full_path}/{run_scoped_file_name}, "
                 f"elapsed={elapsed:.2f}s"
             )
-            return f"Loaded to stage {stage_full_path}/{dated_file_name}"
+            return f"Loaded to stage {stage_full_path}/{run_scoped_file_name}"
 
         except Exception as e:
             logger.error(f"Snowflake stage upload failed: {e}", exc_info=True)
-            raise DataLoadError(
+            error_cls = (
+                TransientDataLoadError
+                if is_transient_snowflake_error(e)
+                else DataLoadError
+            )
+            raise error_cls(
                 f"Failed to upload to Snowflake stage: {str(e)}",
                 destination=f"{stage_name}/{file_name}",
                 original_error=e,

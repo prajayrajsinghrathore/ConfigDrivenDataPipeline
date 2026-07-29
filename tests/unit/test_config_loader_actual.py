@@ -1,5 +1,3 @@
-from rlam_airflow_framework.config.reader import load_yaml_file
-from rlam_airflow_framework.config.validator import ConfigValidator
 # File: tests/unit/test_config_loader_actual.py
 """
 Unit tests for the actual ConfigLoader implementation.
@@ -22,6 +20,8 @@ import yaml
 
 # Import actual implementation
 from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config.reader import load_yaml_file
+from rlam_airflow_framework.config.validator import ConfigValidator
 
 
 class TestConfigLoaderInit:
@@ -380,7 +380,7 @@ class TestConfigLoaderLoadConfigFile:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(tmp_path))
+                ConfigLoader(config_dir=str(tmp_path))
 
         result = load_yaml_file(str(config_file))
 
@@ -395,7 +395,7 @@ class TestConfigLoaderLoadConfigFile:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(tmp_path))
+                ConfigLoader(config_dir=str(tmp_path))
 
         result = load_yaml_file(str(config_file))
         assert result is None
@@ -617,7 +617,7 @@ key2: value2
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
         # yaml.safe_load raises ComposerError for multiple documents
         with pytest.raises(Exception):  # yaml.composer.ComposerError

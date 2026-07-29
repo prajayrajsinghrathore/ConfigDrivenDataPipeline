@@ -9,14 +9,14 @@ has no clean parameterized-IN-list support for a dynamic value count.
 """
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import pandas as pd
 import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
 from rlam_airflow_framework.transformers.base import Transformer, TransformationError
-from rlam_airflow_framework.validation import validate_dataframe, validate_identifier
+from rlam_airflow_framework.utils.validation import validate_dataframe, validate_identifier
 
 log = structlog.get_logger(__name__)
 
@@ -119,7 +119,7 @@ class SnowflakeLookupTransformer(Transformer):
                 unique_value_count=len(unique_values),
             )
 
-            lookup_df = hook.get_pandas_df(query)
+            lookup_df = cast(pd.DataFrame, hook.get_pandas_df(query))
 
             if lookup_df.empty:
                 log.warning("No matching records found in lookup table", trace_id=trace_id)

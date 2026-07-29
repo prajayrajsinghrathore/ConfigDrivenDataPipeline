@@ -174,15 +174,50 @@ persistence:
   size: 20Gi
   accessMode: ReadWriteMany  # For multi-pod access
 
+# airflow-dataframe-storage-pvc backs the dataframe-storage volume mounted
+# below (extraVolumes/extraVolumeMounts) at /opt/airflow/tmp/dataframes —
+# the local-parquet inter-task hand-off path TaskFlow tasks use
+# (rlam_airflow_framework/taskflow/storage.py). Must be ReadWriteMany, same
+# as bundle storage, so every worker/scheduler/apiServer pod sees the same
+# files regardless of which pod produced them. Pre-create it the same way:
+#   kubectl create -f - <<EOF
+#   apiVersion: v1
+#   kind: PersistentVolumeClaim
+#   metadata:
+#     name: airflow-dataframe-storage-pvc
+#   spec:
+#     accessModes: ["ReadWriteMany"]
+#     storageClassName: managed-premium
+#     resources:
+#       requests:
+#         storage: 50Gi
+#   EOF
+
 # Additional volume for bundle storage
+#
+# dataframe-storage is REQUIRED alongside CeleryExecutor: TaskFlow tasks
+# hand DataFrames between each other as local parquet files under
+# rlam_airflow_framework/taskflow/storage.py's AIRFLOW_HOME/tmp/dataframes
+# (only the file path travels through XCom, not the DataFrame itself). With
+# 3 worker replicas and no shared volume for that path, a downstream task
+# scheduled onto a different pod than its upstream task raised
+# FileNotFoundError trying to load a parquet file that only existed on the
+# other pod's local disk. Mounting the SAME ReadWriteMany PVC at that path
+# on every pod (matching the bundle-storage pattern below) makes the
+# hand-off work regardless of which worker picks up which task.
 extraVolumes:
   - name: bundle-storage
     persistentVolumeClaim:
       claimName: airflow-bundle-storage-pvc
+  - name: dataframe-storage
+    persistentVolumeClaim:
+      claimName: airflow-dataframe-storage-pvc  # Pre-created PVC, ReadWriteMany (see PERSISTENT VOLUMES above)
 
 extraVolumeMounts:
   - name: bundle-storage
     mountPath: /opt/airflow/bundle_storage
+  - name: dataframe-storage
+    mountPath: /opt/airflow/tmp/dataframes
 
 # ==============================================================================
 # SCHEDULER CONFIGURATION
@@ -196,13 +231,54 @@ scheduler:
     limits:
       cpu: "2000m"
       memory: "4Gi"
-  
+
   # DAG parsing configuration
   extraEnv:
     - name: AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL
       value: "60"  # Scan for DAG files every 60s
     - name: AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL
       value: "30"  # Min time between re-parsing a DAG
+
+  # Provision Airflow pools FROM global_settings.yaml's tenants.*.slots (3A.6
+  # contract, see TENANT-SPECIFIC RESOURCE POOLS below for why this lives
+  # here rather than migrateDatabaseJob, and why it re-clones the config repo
+  # rather than reading the DAG bundle's checkout).
+  extraInitContainers:
+    - name: provision-tenant-pools
+      image: "{{ .Values.images.airflow.repository }}:{{ .Values.images.airflow.tag }}"
+      # TODO(verify): `airflow pools set` needs AIRFLOW__DATABASE__SQL_ALCHEMY_CONN.
+      # The chart injects it into the scheduler's main container automatically,
+      # but extraInitContainers may not inherit it — confirm with
+      # `helm template ... | grep -A5 provision-tenant-pools` and add an
+      # explicit envFrom/secretRef (release's `{release-name}-airflow-metadata`
+      # secret, chart-dependent) here if it's missing.
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          rm -rf /tmp/config_checkout
+          git clone --depth 1 --branch prod-v1.0.0 \
+            https://github.com/prajayrajsinghrathore/AirrflowConfigBundle.git \
+            /tmp/config_checkout
+          python - <<'PY'
+          import subprocess
+          import yaml
+
+          with open("/tmp/config_checkout/config/global_settings.yaml") as f:
+              g = yaml.safe_load(f)
+
+          seen = {}
+          for tenant, cfg in g.get("tenants", {}).items():
+              pool = cfg["pool"]
+              seen[pool] = max(seen.get(pool, 0), int(cfg["slots"]))
+
+          for pool, slots in seen.items():
+              subprocess.run(
+                  ["airflow", "pools", "set", pool, str(slots),
+                   f"Tenant pool provisioned from global_settings.yaml (3A.6 contract)"],
+                  check=True,
+              )
+          PY
 
 # ==============================================================================
 # API SERVER CONFIGURATION (Airflow 3 — was `webserver` in 2.x / 3.1.x charts)
@@ -254,29 +330,23 @@ workers:
 # max_active_runs logic depends on the config value equalling the real pool size.
 # So provision pools FROM that same file, do not hand-maintain a list here.
 #
-# The official chart has no native `pools:` value; provision via an init step
-# that reads global_settings.yaml and calls `airflow pools set`. Example:
+# global_settings.yaml ships as part of the `production_configs` GitDagBundle
+# (config/ subdir, see DAG BUNDLE CONFIGURATION above) — it is NOT baked into
+# the image, so it isn't at a fixed on-disk path an initContainer can just
+# read. Rather than depending on the bundle-storage PVC already being
+# populated (chicken-and-egg on a fresh cluster), the init step below does
+# its own shallow clone of the same repo/tag the GitDagBundle tracks.
 #
-# migrateDatabaseJob:            # or scheduler.extraInitContainers
-#   extraInitContainers:
-#     - name: provision-pools
-#       image: "{{ .Values.images.airflow.repository }}:{{ .Values.images.airflow.tag }}"
-#       command: ["/bin/bash","-c"]
-#       args:
-#         - |
-#           python - <<'PY'
-#           import yaml, subprocess
-#           g = yaml.safe_load(open("/opt/airflow/config/global_settings.yaml"))
-#           seen = {}
-#           for t, v in g.get("tenants", {}).items():
-#               seen[v["pool"]] = max(seen.get(v["pool"], 0), int(v["slots"]))
-#           for pool, slots in seen.items():
-#               subprocess.run(["airflow","pools","set",pool,str(slots),
-#                               f"tenant pool {pool} (3A.6 contract)"], check=True)
-#           PY
+# This runs as scheduler.extraInitContainers rather than migrateDatabaseJob's:
+# `airflow pools set` needs the pools table to exist, and migrateDatabaseJob's
+# own initContainers run BEFORE its main container performs `airflow db
+# migrate` — so provisioning there could race the migration on a fresh DB.
+# The scheduler deployment only starts once migrations have completed, so
+# provisioning here is safe, and `airflow pools set` is idempotent, so
+# re-running it on every scheduler pod (re)start is harmless.
 #
-# The production global_settings.yaml (with the real operations/reporting/esg/
-# shared pools) ships via the same path decided in Task 3C.4.
+# NOTE: the repo URL and tag below MUST be kept in sync with the `connections:
+# github_configs` host and `tracking_ref` in DAG BUNDLE CONFIGURATION above.
 
 # ==============================================================================
 # LOGGING

@@ -184,6 +184,21 @@ class TenantContext:
         # Priority 1: Explicit connection_id in config
         if "connection_id" in dest_config:
             conn_id = dest_config["connection_id"]
+
+            # Guard against cross-tenant spoofing: reject an explicit
+            # connection_id that is registered to a DIFFERENT tenant. A
+            # connection_id unknown to every tenant's registry is allowed
+            # through (e.g. shared/global connections), but one that
+            # belongs to another tenant is always a configuration error
+            # or an attempted privilege escalation.
+            owning_tenant = self._find_connection_owner(conn_id)
+            if owning_tenant is not None and owning_tenant != tenant_id:
+                raise TenantValidationError(
+                    f"connection_id '{conn_id}' is registered to tenant "
+                    f"'{owning_tenant}', not '{tenant_id}'. Cross-tenant "
+                    f"connection references are not allowed."
+                )
+
             log.debug(
                 "Using explicit connection_id from config",
                 connection_id=conn_id,
@@ -219,6 +234,36 @@ class TenantContext:
             tenant=tenant_id
         )
         return conn_id
+
+    def _find_connection_owner(self, conn_id: str) -> Optional[str]:
+        """
+        Find which tenant a connection_id is registered to, if any.
+
+        Args:
+            conn_id: Connection ID to look up
+
+        Returns:
+            The owning tenant ID, or None if conn_id is not registered
+            to any tenant (e.g. a shared/global or ad-hoc connection).
+        """
+        for tid, tconfig in self.tenants.items():
+            if conn_id in tconfig.get("connections", {}).values():
+                return tid
+        return None
+
+    def get_tenant_kafka_bootstrap_servers(self, tenant_id: str) -> Optional[str]:
+        """
+        Get the tenant's Kafka bootstrap servers override, if configured.
+
+        Today every tenant shares one Kafka cluster (the global
+        KAFKA_BOOTSTRAP_SERVERS default), so this returns None for all
+        tenants until a tenant's `kafka.bootstrap_servers` is set in
+        global_settings.yaml - the hook a future multi-cluster setup needs
+        without changing callers.
+        """
+        tenant_config = self.get_tenant_config(tenant_id)
+        kafka_config = tenant_config.get("kafka", {})
+        return kafka_config.get("bootstrap_servers")
 
     def resolve_kafka_topic(
         self,

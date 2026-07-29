@@ -14,6 +14,7 @@ import structlog
 from rlam_airflow_framework.data_fetchers.base import (
     DataFetcher,
     DataFetchError,
+    TransientDataFetchError,
     DEFAULT_TIMEOUT,
     DEFAULT_MAX_RETRIES,
     DEFAULT_RETRY_BACKOFF,
@@ -22,11 +23,17 @@ from rlam_airflow_framework.data_fetchers.parsers import parse_content
 
 _log = structlog.get_logger(__name__)
 
+# HTTP statuses the connection-pool retry adapter already retries; if one
+# still surfaces as a raised HTTPError, the adapter exhausted its own
+# retries, so it's still worth a task-level retry (RETRYABLE_STATUS_CODES
+# stays in sync with _create_retry_session's status_forcelist below).
+RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
+
 
 def _create_retry_session(
     max_retries: int = DEFAULT_MAX_RETRIES,
     backoff_factor: float = DEFAULT_RETRY_BACKOFF,
-    status_forcelist: tuple = (429, 500, 502, 503, 504),
+    status_forcelist: tuple = RETRYABLE_STATUS_CODES,
 ) -> requests.Session:
     """
     Create a requests session with retry logic.
@@ -137,7 +144,7 @@ class HttpFetcher(DataFetcher):
             log.error(
                 "Request timeout", trace_id=trace_id, timeout=timeout, error=str(e)
             )
-            raise DataFetchError(
+            raise TransientDataFetchError(
                 f"Request timed out after {timeout} seconds",
                 source=url,
                 original_error=e,
@@ -145,7 +152,7 @@ class HttpFetcher(DataFetcher):
 
         except requests.exceptions.ConnectionError as e:
             log.error("Connection error", trace_id=trace_id, url=url, error=str(e))
-            raise DataFetchError(
+            raise TransientDataFetchError(
                 f"Failed to connect to {url}", source=url, original_error=e
             ) from e
 
@@ -156,7 +163,16 @@ class HttpFetcher(DataFetcher):
                 status=response.status_code,
                 error=str(e),
             )
-            raise DataFetchError(
+            # The connection-pool adapter already retries RETRYABLE_STATUS_CODES;
+            # if one still got here, that budget is exhausted but a task-level
+            # retry (with its own backoff) is still worth it. Other statuses
+            # (4xx auth/not-found/etc.) are deterministic - retrying won't help.
+            error_cls = (
+                TransientDataFetchError
+                if response.status_code in RETRYABLE_STATUS_CODES
+                else DataFetchError
+            )
+            raise error_cls(
                 f"HTTP {response.status_code}: {response.reason}",
                 source=url,
                 original_error=e,

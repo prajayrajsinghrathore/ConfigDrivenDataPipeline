@@ -160,7 +160,7 @@ def check_kafka_health(
 
 if AIRFLOW_AVAILABLE and task is not None:
     @task.sensor(poke_interval=DEFAULT_POKE_INTERVAL, timeout=DEFAULT_TIMEOUT, mode="reschedule")
-    def wait_for_kafka_health(bootstrap_servers: Optional[str] = None) -> PokeReturnValue:
+    def wait_for_kafka_health(bootstrap_servers: Optional[str] = None) -> PokeReturnValue:  # pyright: ignore[reportRedeclaration]
         """
         Modern @task.sensor for Kafka health check (Airflow 3.x).
         
@@ -206,3 +206,8 @@ if AIRFLOW_AVAILABLE and task is not None:
             is_done=result["healthy"],
             xcom_value=result,
         )
+else:
+    # Always define the name so callers can import it unconditionally and
+    # check for None, rather than getting an ImportError when Airflow's
+    # task/PokeReturnValue surface isn't available.
+    wait_for_kafka_health: Any = None  # pyright: ignore[reportRedeclaration]

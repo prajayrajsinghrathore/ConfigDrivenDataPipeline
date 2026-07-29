@@ -8,12 +8,14 @@ import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from tenacity import RetryError
 
-from rlam_airflow_framework.validation import validate_identifier
+from rlam_airflow_framework.utils.validation import validate_identifier
 from rlam_airflow_framework.destinations.base import DestinationLoader
 from rlam_airflow_framework.destinations.primitives import (
     DataLoadError,
+    TransientDataLoadError,
     DEFAULT_BATCH_SIZE,
     DEFAULT_RETRY_ATTEMPTS,
+    SNOWFLAKE_TRANSIENT_ERRORS,
     is_transient_snowflake_error,
     snowflake_retry,
 )
@@ -189,9 +191,16 @@ class SnowflakeTableLoader(DestinationLoader):
 
         try:
             return _execute_transactional_load()
-        except RetryError as e:
+        except (RetryError, *SNOWFLAKE_TRANSIENT_ERRORS) as e:
+            # snowflake_retry sets reraise=True, so tenacity re-raises the
+            # LAST attempt's own exception once retries are exhausted rather
+            # than wrapping it in RetryError - the RetryError case is kept
+            # only as a defensive fallback. Either way, every attempt here
+            # already matched SNOWFLAKE_TRANSIENT_ERRORS (is_transient_
+            # snowflake_error above) and still failed; a longer Airflow-level
+            # retry delay may outlast the underlying outage.
             logger.error("All retry attempts exhausted", exc_info=True)
-            raise DataLoadError(
+            raise TransientDataLoadError(
                 f"Failed to load data after {DEFAULT_RETRY_ATTEMPTS} attempts",
                 destination=full_table_name,
                 original_error=e,

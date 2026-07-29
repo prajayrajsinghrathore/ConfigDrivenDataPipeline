@@ -3,9 +3,8 @@
 Unit tests for PartitionInfo.
 """
 
-from datetime import date, datetime
+from datetime import date
 
-import pytest
 
 from rlam_airflow_framework.taskflow.partition import PartitionInfo
 

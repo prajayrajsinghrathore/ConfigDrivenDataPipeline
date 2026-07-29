@@ -17,7 +17,11 @@ import structlog
 # is DB-isolated on Airflow 3 Task SDK workers and must not be used in task code)
 from airflow.sdk import Connection
 
-from rlam_airflow_framework.data_fetchers.base import DataFetcher, DataFetchError
+from rlam_airflow_framework.data_fetchers.base import (
+    DataFetcher,
+    DataFetchError,
+    TransientDataFetchError,
+)
 from rlam_airflow_framework.data_fetchers.parsers import parse_content
 
 _log = structlog.get_logger(__name__)
@@ -229,8 +233,11 @@ class SftpFetcher(DataFetcher):
             ) from e
 
         except paramiko.SSHException as e:
+            # Excludes AuthenticationException (caught above, more specific):
+            # what's left here is connection/protocol-level (banner timeout,
+            # connection reset, etc.) - typically transient, worth a retry.
             log.error(f"SSH error: {e}")
-            raise DataFetchError(
+            raise TransientDataFetchError(
                 f"SSH connection error: {str(e)}",
                 source=sftp_conn_id,
                 original_error=e,
@@ -238,7 +245,7 @@ class SftpFetcher(DataFetcher):
 
         except socket.timeout as e:
             log.error(f"SFTP connection timeout: {e}")
-            raise DataFetchError(
+            raise TransientDataFetchError(
                 f"Connection timed out after {connect_timeout} seconds",
                 source=sftp_conn_id,
                 original_error=e,

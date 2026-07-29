@@ -16,6 +16,9 @@ partition:
   runtime_assigned: true
   granularity: day
   mapper: fan_out
+  # Capped to the 'testing' tenant's pool size (8 slots, config/global_settings.yaml)
+  # - the fan_out mapper default of 64 would massively over-subscribe it.
+  max_fan_out: 8
 
 destination:
   primary:

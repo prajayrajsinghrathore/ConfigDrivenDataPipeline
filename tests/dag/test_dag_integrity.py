@@ -706,7 +706,7 @@ class TestDAGFactoryCreateDeadlineAlert:
         """Test returns None when deadline not enabled."""
         schedule_config = {"deadline": {"enabled": False, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
@@ -714,7 +714,7 @@ class TestDAGFactoryCreateDeadlineAlert:
         """Test returns None when no deadline config present."""
         schedule_config = {}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
@@ -724,7 +724,7 @@ class TestDAGFactoryCreateDeadlineAlert:
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is None
 
@@ -748,7 +748,7 @@ class TestDAGFactoryCreateDeadlineAlert:
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 45}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is not None
         from airflow.sdk.definitions.deadline import DeadlineAlert
@@ -769,7 +769,7 @@ class TestDAGFactoryCreateDeadlineAlert:
             }
         }
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         assert result is not None
         assert result[0].interval == timedelta(minutes=30)
@@ -780,7 +780,7 @@ class TestDAGFactoryCreateDeadlineAlert:
 
         schedule_config = {"deadline": {"enabled": True, "timeout_minutes": 30}}
 
-        result = factory._create_deadline_alert("test_dag", schedule_config)
+        result = factory._create_deadline_alert("test_dag", schedule_config, "test_tenant")
 
         from airflow.sdk.definitions.deadline import DeadlineReference
 

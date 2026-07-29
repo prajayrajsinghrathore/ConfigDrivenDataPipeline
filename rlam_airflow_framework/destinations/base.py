@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Dict, Optional
 import pandas as pd
 import structlog
 
-from rlam_airflow_framework.validation import validate_dataframe
+from rlam_airflow_framework.utils.validation import validate_dataframe
 
 _log = structlog.get_logger(__name__)
 

@@ -11,6 +11,7 @@ Holds:
 
 import logging
 import os
+import re
 
 import structlog
 from tenacity import (
@@ -22,6 +23,8 @@ from tenacity import (
 )
 
 from typing import Optional
+
+from rlam_airflow_framework.utils.retry_policy import TransientError
 
 # App logging is unified on structlog. `_log` is the module base; loaders
 # locally rebind `logger = _log.bind(trace_id=...)` so trace_id rides along as
@@ -50,6 +53,52 @@ try:
 except ImportError:
     # Fallback if snowflake-connector not available
     SNOWFLAKE_TRANSIENT_ERRORS = (Exception,)
+
+# Object storage transient errors (S3/boto3, Azure/azure-core) that should
+# trigger retry. Both libraries are optional - ObjectStorageLoader talks to
+# whichever backend fsspec resolves for the configured URI, so neither may
+# be installed. Falls back to nothing matching (isinstance against an empty
+# tuple is always False) rather than treating everything as transient.
+_object_storage_transient_types = []
+try:
+    import botocore.exceptions as _botocore_errors
+    _object_storage_transient_types += [
+        _botocore_errors.EndpointConnectionError,
+        _botocore_errors.ConnectTimeoutError,
+        _botocore_errors.ReadTimeoutError,
+        _botocore_errors.ConnectionClosedError,
+    ]
+except ImportError:
+    pass
+try:
+    import azure.core.exceptions as _azure_errors
+    _object_storage_transient_types += [
+        _azure_errors.ServiceRequestError,
+        _azure_errors.ServiceResponseError,
+    ]
+except ImportError:
+    pass
+OBJECT_STORAGE_TRANSIENT_ERRORS = tuple(_object_storage_transient_types) + (
+    TimeoutError,
+    ConnectionError,
+)
+
+
+def sanitize_for_filename(value: str) -> str:
+    """
+    Make a value safe to embed in a filename / object key.
+
+    Used to turn ``LoadContext.correlation_id`` (``{dag_id}_{run_id}_{task_id}``)
+    into a deterministic filename suffix. Airflow run_ids embed an ISO
+    timestamp (e.g. ``scheduled__2024-01-01T00:00:00+00:00``), so ``:`` and
+    ``+`` need stripping for filesystem/S3 safety.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
+
+def is_transient_object_storage_error(exception: Exception) -> bool:
+    """Determine if an object storage error (S3/Azure/...) is transient."""
+    return isinstance(exception, OBJECT_STORAGE_TRANSIENT_ERRORS)
 
 
 def is_transient_snowflake_error(exception: Exception) -> bool:
@@ -137,6 +186,11 @@ class DataLoadError(Exception):
         super().__init__(f"[{destination}] {message}")
 
 
+class TransientDataLoadError(DataLoadError, TransientError):
+    """A DataLoadError worth retrying at the Airflow task level (connection
+    reset, timeout, service unavailable, ...)."""
+
+
 class ObjectStorageError(DataLoadError):
     """Custom exception for object storage operations wrapping native errors."""
 
@@ -144,3 +198,7 @@ class ObjectStorageError(DataLoadError):
         self, message: str, destination: str, original_error: Optional[Exception] = None
     ):
         super().__init__(message, destination, original_error)
+
+
+class TransientObjectStorageError(ObjectStorageError, TransientError):
+    """An ObjectStorageError worth retrying at the Airflow task level."""

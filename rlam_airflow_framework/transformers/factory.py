@@ -21,7 +21,7 @@ from rlam_airflow_framework.transformers.enrichments.snowflake import (
 from rlam_airflow_framework.transformers.filter import FilterTransformer
 from rlam_airflow_framework.transformers.formula import FormulaTransformer
 from rlam_airflow_framework.transformers.type_cast import TypeCastTransformer
-from rlam_airflow_framework.validation import validate_dataframe
+from rlam_airflow_framework.utils.validation import validate_dataframe
 
 log = structlog.get_logger(__name__)
 

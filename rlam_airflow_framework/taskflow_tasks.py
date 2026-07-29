@@ -368,9 +368,11 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
     ctx = _build_context()
     storage = DataFrameStorage()
 
-    # Load DataFrame
+    # Load DataFrame. Cleanup of df_path is deferred until this task fully
+    # succeeds (see returns below) so a mid-task transient failure lets an
+    # Airflow retry reload the same input file instead of hitting a
+    # FileNotFoundError from a file we already deleted on attempt 1.
     df = storage.load(df_path)
-    storage.cleanup(df_path)
 
     log.info(
         "Starting data transformation",
@@ -380,7 +382,9 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
 
     if df.empty:
         log.warning("Empty DataFrame received for transformation")
-        return storage.save(df, ctx.task_id, ctx.run_id)
+        result_path = storage.save(df, ctx.task_id, ctx.run_id)
+        storage.cleanup(df_path)
+        return result_path
 
     topic = config.get("event", {}).get("topic", "pipeline-events")
 
@@ -409,7 +413,9 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
             topic=topic,
         )
 
-        return storage.save(df, ctx.task_id, ctx.run_id)
+        result_path = storage.save(df, ctx.task_id, ctx.run_id)
+        storage.cleanup(df_path)
+        return result_path
 
     except Exception as e:
         log.error(
@@ -445,9 +451,9 @@ def validate_data_quality(
     ctx = _build_context()
     storage = DataFrameStorage()
 
-    # Load DataFrame
+    # Load DataFrame. Cleanup deferred until DQ checks + saves succeed, so a
+    # retry after a mid-task failure can still reload df_path.
     df = storage.load(df_path)
-    storage.cleanup(df_path)
 
     destination_table = (
         config.get("destination", {}).get("primary", {}).get("table", "unknown")
@@ -473,6 +479,7 @@ def validate_data_quality(
     # Save DataFrames and return paths
     valid_path = storage.save(valid_df, f"{ctx.task_id}_valid", ctx.run_id)
     invalid_path = storage.save(invalid_df, f"{ctx.task_id}_invalid", ctx.run_id)
+    storage.cleanup(df_path)
 
     return {"valid_path": valid_path, "invalid_path": invalid_path, "results": results}
 
@@ -526,9 +533,9 @@ def quarantine_invalid_data(
     ctx = _build_context()
     storage = DataFrameStorage()
 
-    # Load DataFrame
+    # Load DataFrame. Cleanup deferred until the quarantine record save
+    # succeeds, so a retry after a mid-task failure can reload invalid_df_path.
     invalid_df = storage.load(invalid_df_path)
-    storage.cleanup(invalid_df_path)
 
     handler = QuarantineHandler(config)
 
@@ -552,7 +559,9 @@ def quarantine_invalid_data(
 
     log.info("Prepared quarantine records", count=len(quarantine_df))
 
-    return storage.save(quarantine_df, ctx.task_id, ctx.run_id)
+    result_path = storage.save(quarantine_df, ctx.task_id, ctx.run_id)
+    storage.cleanup(invalid_df_path)
+    return result_path
 
 
 @task
@@ -682,9 +691,10 @@ def load_data(
     partition = PartitionInfo.resolve(config, ctx.raw_context)
     wm = WatermarkManager(ctx.dag_id, WatermarkConfig.from_config(config))
 
-    # Load DataFrame
+    # Load DataFrame. Cleanup deferred until the destination writes (and the
+    # watermark/lineage updates that depend on them) fully succeed, so a
+    # retry after a mid-task failure can reload df_path.
     df = storage.load(df_path)
-    storage.cleanup(df_path)
 
     log.info(
         "Starting data load",
@@ -695,6 +705,7 @@ def load_data(
 
     if df.empty:
         log.warning("Empty DataFrame provided for loading")
+        storage.cleanup(df_path)
         return "No data to load (empty DataFrame)"
 
     # Substitute partition templates in destination config
@@ -739,12 +750,20 @@ def load_data(
         # Update watermark
         wm.update(df)
 
-        # Emit standard OpenLineage dataset for observability.
+        # Emit standard OpenLineage dataset for observability. This is a
+        # lineage/summary event, not a data-export channel: it carries schema
+        # and row-count facets only. Dumping full row content here would risk
+        # exceeding Kafka's message.max.bytes (default 1MB) on any
+        # non-trivial DataFrame and would OOM the worker serializing it.
         # partition_key rides along so the "data landed" event is traceable to
         # its partition (closes the gap left by the 2A.4.2 ingest-only threading).
         kafka_publisher.publish_data(
             dag_id=ctx.dag_id,
-            data=df.to_dict(orient="records"),
+            data={
+                "row_count": len(df),
+                "columns": list(df.columns),
+                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+            },
             topic=topic,
             status="success",
             correlation_id=ctx.correlation_id,
@@ -755,6 +774,7 @@ def load_data(
             ),
         )
 
+        storage.cleanup(df_path)
         return summary
 
     except Exception as e:

@@ -276,6 +276,7 @@ quarantine_destination:
   default_table: "DQ_AUDIT.QUARANTINE_RECORDS"
   schema:
     quarantine_id: "STRING - UUID for the quarantine record"
+    tenant_id: "STRING - Owning tenant (metadata.tenant); required for per-tenant access control on this shared table"
     source_pipeline: "STRING - Name of the DAG/pipeline"
     source_table: "STRING - Original destination table"
     failed_checks: "ARRAY<STRING> - List of failed check names"

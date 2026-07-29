@@ -11,8 +11,11 @@ Snowflake hooks are patched locally per test (patch-where-used) for isolation;
 local-file tests use a real temp filesystem.
 """
 
+import time
+
 import pandas as pd
 import pytest
+from snowflake.connector.errors import OperationalError
 from unittest.mock import patch
 
 from rlam_airflow_framework.destinations import (
@@ -22,6 +25,13 @@ from rlam_airflow_framework.destinations import (
     SnowflakeStageLoader,
     SnowflakeTableLoader,
     StoredProcedureLoader,
+)
+from rlam_airflow_framework.destinations.object_storage import ObjectStoragePath
+from rlam_airflow_framework.destinations.primitives import (
+    DataLoadError,
+    ObjectStorageError,
+    TransientDataLoadError,
+    TransientObjectStorageError,
 )
 
 # Patch the Snowflake hook where each loader module imports it (patch-where-used).
@@ -44,30 +54,55 @@ def _ctx(**kwargs):
 
 
 class TestLocalFileLoader:
-    def test_writes_parquet_and_returns_timestamped_path(self, tmp_path):
-        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
-        target = tmp_path / "out.parquet"
+    @pytest.fixture(autouse=True)
+    def _sandbox_root(self, tmp_path, monkeypatch):
+        # dest_config["path"] is resolved relative to LOCAL_FILE_OUTPUT_ROOT
+        # (see local_file.py's sandboxing fix); point it at the test's
+        # tmp_path so relative paths below still land somewhere writable.
+        monkeypatch.setattr(
+            "rlam_airflow_framework.destinations.local_file.LOCAL_FILE_OUTPUT_ROOT",
+            tmp_path,
+        )
 
-        result = LocalFileLoader().load(df, {"type": "local_file", "path": str(target)}, _ctx())
+    def test_writes_parquet_and_returns_timestamped_path(self):
+        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+
+        result = LocalFileLoader().load(df, {"type": "local_file", "path": "out.parquet"}, _ctx())
 
         assert result.endswith(".parquet")
-        assert target.stem in result  # timestamp inserted before the extension
+        assert "out" in result  # timestamp inserted before the extension
         written = pd.read_parquet(result)
         assert written.equals(df)
 
-    def test_writes_csv(self, tmp_path):
+    def test_writes_csv(self):
         df = pd.DataFrame({"a": [1]})
         result = LocalFileLoader().load(
-            df, {"type": "local_file", "path": str(tmp_path / "out.csv"), "format": "csv"}, _ctx()
+            df, {"type": "local_file", "path": "out.csv", "format": "csv"}, _ctx()
         )
         assert result.endswith(".csv")
         assert pd.read_csv(result).equals(df)
 
-    def test_empty_dataframe_short_circuits(self, tmp_path):
+    def test_empty_dataframe_short_circuits(self):
         result = LocalFileLoader().load(
-            pd.DataFrame(), {"type": "local_file", "path": str(tmp_path / "x.parquet")}, _ctx()
+            pd.DataFrame(), {"type": "local_file", "path": "x.parquet"}, _ctx()
         )
         assert "empty DataFrame" in result
+
+    @pytest.mark.parametrize(
+        "malicious_path",
+        [
+            "../../../../opt/airflow/airflow.cfg",
+            "subdir/../../escape.txt",
+            "C:/Windows/win.ini",
+            "sub/C:/evil.txt",
+        ],
+    )
+    def test_rejects_path_traversal_and_drive_letter_escapes(self, malicious_path):
+        df = pd.DataFrame({"a": [1]})
+        with pytest.raises(DataLoadError):
+            LocalFileLoader().load(
+                df, {"type": "local_file", "path": malicious_path}, _ctx()
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +144,22 @@ class TestSnowflakeTableLoader:
         )
         assert "empty DataFrame" in result
 
+    @patch(_HOOK_TABLE)
+    def test_persistent_transient_error_exhausts_retries_as_transient(
+        self, mock_hook_cls, monkeypatch
+    ):
+        # Skip tenacity's real exponential backoff between attempts.
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        cursor = mock_hook_cls.return_value.get_conn.return_value.cursor.return_value
+        cursor.executemany.side_effect = OperationalError(msg="Connection timeout")
+
+        df = pd.DataFrame({"id": [1]})
+        with pytest.raises(TransientDataLoadError):
+            SnowflakeTableLoader().load(
+                df, {"type": "snowflake_table", "table": "S.T"}, _ctx()
+            )
+
 
 # ---------------------------------------------------------------------------
 # ObjectStorageLoader
@@ -126,6 +177,31 @@ class TestObjectStorageLoader:
             pd.DataFrame(), {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
         )
         assert "empty DataFrame" in result
+
+    def test_connection_error_during_upload_is_transient(self):
+        write_target = ObjectStoragePath.return_value.parent.__truediv__.return_value  # pyright: ignore[reportAttributeAccessIssue]
+        write_target.write_bytes.side_effect = ConnectionError("refused")
+        try:
+            df = pd.DataFrame({"a": [1]})
+            with pytest.raises(TransientObjectStorageError):
+                ObjectStorageLoader().load(
+                    df, {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
+                )
+        finally:
+            write_target.write_bytes.side_effect = None
+
+    def test_unexpected_error_during_upload_is_deterministic(self):
+        write_target = ObjectStoragePath.return_value.parent.__truediv__.return_value  # pyright: ignore[reportAttributeAccessIssue]
+        write_target.write_bytes.side_effect = RuntimeError("permission denied")
+        try:
+            df = pd.DataFrame({"a": [1]})
+            with pytest.raises(ObjectStorageError) as exc_info:
+                ObjectStorageLoader().load(
+                    df, {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
+                )
+            assert not isinstance(exc_info.value, TransientObjectStorageError)
+        finally:
+            write_target.write_bytes.side_effect = None
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +222,24 @@ class TestStoredProcedureLoader:
 
         assert "SP_AGG" in result
         assert mock_hook_cls.return_value.run.called
+
+    @patch(_HOOK_PROC)
+    def test_persistent_transient_error_exhausts_retries_as_transient(
+        self, mock_hook_cls, monkeypatch
+    ):
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        mock_hook_cls.return_value.run.side_effect = OperationalError(
+            msg="Connection timeout"
+        )
+
+        df = pd.DataFrame({"a": [1]})
+        cfg = {
+            "type": "stored_procedure",
+            "procedure": "ANALYTICS.SP_AGG",
+            "capture_result": False,
+        }
+        with pytest.raises(TransientDataLoadError):
+            StoredProcedureLoader().load(df, cfg, _ctx())
 
     def test_invalid_procedure_name_rejected(self):
         df = pd.DataFrame({"a": [1]})
@@ -169,6 +263,25 @@ class TestSnowflakeStageLoader:
 
         assert "MY_STAGE" in result
         assert mock_hook_cls.return_value.run.called
+
+    @patch(_HOOK_STAGE)
+    def test_transient_put_error_is_transient(self, mock_hook_cls):
+        mock_hook_cls.return_value.run.side_effect = OperationalError(
+            msg="Connection timeout"
+        )
+        df = pd.DataFrame({"a": [1]})
+        cfg = {"type": "snowflake_stage", "stage_name": "MY_STAGE", "file_name": "data.csv"}
+        with pytest.raises(TransientDataLoadError):
+            SnowflakeStageLoader().load(df, cfg, _ctx())
+
+    @patch(_HOOK_STAGE)
+    def test_deterministic_put_error_is_not_transient(self, mock_hook_cls):
+        mock_hook_cls.return_value.run.side_effect = RuntimeError("syntax error")
+        df = pd.DataFrame({"a": [1]})
+        cfg = {"type": "snowflake_stage", "stage_name": "MY_STAGE", "file_name": "data.csv"}
+        with pytest.raises(Exception) as exc_info:
+            SnowflakeStageLoader().load(df, cfg, _ctx())
+        assert not isinstance(exc_info.value, TransientDataLoadError)
 
     def test_invalid_stage_name_rejected(self):
         df = pd.DataFrame({"a": [1]})

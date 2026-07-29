@@ -141,8 +141,13 @@ class PluginKafkaPublisher:
     def __init__(self):
         if self._initialized:
             return
-            
-        self._producer = None
+
+        # Keyed by bootstrap_servers (None = the kafka_default connection)
+        # so a tenant with an isolated alert cluster gets its own producer
+        # instead of sharing whichever cluster the first caller happened to
+        # initialize — this is a process-wide singleton, and deadline
+        # notifiers for different tenants/DAGs run in the same process.
+        self._producers: Dict[Optional[str], Any] = {}
         self._producer_lock = threading.Lock()
         self._delivery_result = None
         self._initialized = True
@@ -155,42 +160,52 @@ class PluginKafkaPublisher:
         else:
             self._delivery_result = {"success": True, "topic": msg.topic(), "partition": msg.partition()}
 
-    def _get_producer(self):
-        """Lazy initialize Kafka producer using confluent-kafka."""
-        if self._producer is None:
+    def _get_producer(self, bootstrap_servers: Optional[str] = None):
+        """
+        Lazy initialize (and cache) a Kafka producer for the given
+        bootstrap_servers, using confluent-kafka.
+
+        Args:
+            bootstrap_servers: Explicit tenant/pipeline Kafka cluster
+                override. If None, falls back to the kafka_default
+                Airflow connection (today's single shared cluster).
+        """
+        if bootstrap_servers not in self._producers:
             with self._producer_lock:
-                if self._producer is None:
+                if bootstrap_servers not in self._producers:
                     try:
                         from confluent_kafka import Producer
-                        
-                        # Fetch Kafka configuration from Airflow Connection
-                        try:
-                            conn = Connection.get("kafka_default")
-                            bootstrap_servers = conn.extra_dejson.get("bootstrap.servers", "kafka:29092")
-                            security_protocol = conn.extra_dejson.get("security.protocol", "PLAINTEXT")
-                        except Exception as e:
-                            log.warning("Could not fetch kafka_default connection, using defaults", error=str(e))
-                            bootstrap_servers = "kafka:29092"
-                            security_protocol = "PLAINTEXT"
-                        
+
+                        security_protocol = "PLAINTEXT"
+                        resolved_bootstrap_servers = bootstrap_servers
+                        if resolved_bootstrap_servers is None:
+                            # Fetch Kafka configuration from Airflow Connection
+                            try:
+                                conn = Connection.get("kafka_default")
+                                resolved_bootstrap_servers = conn.extra_dejson.get("bootstrap.servers", "kafka:29092")
+                                security_protocol = conn.extra_dejson.get("security.protocol", "PLAINTEXT")
+                            except Exception as e:
+                                log.warning("Could not fetch kafka_default connection, using defaults", error=str(e))
+                                resolved_bootstrap_servers = "kafka:29092"
+
                         config = {
-                            "bootstrap.servers": bootstrap_servers,
+                            "bootstrap.servers": resolved_bootstrap_servers,
                             "security.protocol": security_protocol,
                             "acks": "all",
                             "retries": 3,
                             "socket.timeout.ms": PLUGIN_KAFKA_SOCKET_TIMEOUT_MS,
                             "message.timeout.ms": PLUGIN_KAFKA_MESSAGE_TIMEOUT_MS,
                         }
-                        
-                        self._producer = Producer(config)
+
+                        self._producers[bootstrap_servers] = Producer(config)
                         log.info(
                             "Plugin Kafka producer initialized (confluent-kafka)",
-                            bootstrap_servers=bootstrap_servers,
+                            bootstrap_servers=resolved_bootstrap_servers,
                         )
                     except Exception as e:
                         log.error("Failed to initialize Kafka producer", error=str(e))
-                        return None
-        return self._producer
+                        self._producers[bootstrap_servers] = None
+        return self._producers[bootstrap_servers]
 
     def publish_event(
         self,
@@ -199,6 +214,7 @@ class PluginKafkaPublisher:
         dag_id: str,
         message: str,
         metadata: Optional[Dict[str, Any]] = None,
+        bootstrap_servers: Optional[str] = None,
     ) -> bool:
         """
         Publish an event to Kafka.
@@ -209,11 +225,14 @@ class PluginKafkaPublisher:
             dag_id: DAG identifier
             message: Event message
             metadata: Additional metadata
+            bootstrap_servers: Tenant-specific Kafka cluster override, if
+                the tenant has one configured in global_settings.yaml.
+                Falls back to the kafka_default connection when None.
 
         Returns:
             True if published successfully, False otherwise
         """
-        producer = self._get_producer()
+        producer = self._get_producer(bootstrap_servers)
         if producer is None:
             log.warning("Kafka producer not available, skipping publish")
             return False
@@ -278,17 +297,27 @@ class KafkaDeadlineNotifier(BaseNotifier):
 
     template_fields = ("message", "topic")
 
-    def __init__(self, topic: str = "pipeline-alerts", message: str = "", **kwargs):
+    def __init__(
+        self,
+        topic: str = "pipeline-alerts",
+        message: str = "",
+        bootstrap_servers: Optional[str] = None,
+        **kwargs,
+    ):
         """
         Initialize Kafka deadline notifier.
 
         Args:
             topic: Kafka topic for deadline alerts
             message: Custom message (supports Jinja templating)
+            bootstrap_servers: Tenant-specific Kafka cluster override (see
+                tenant_context.get_tenant_kafka_bootstrap_servers). Falls
+                back to the kafka_default connection when None.
         """
         super().__init__(**kwargs)
         self.topic = topic
         self.message = message
+        self.bootstrap_servers = bootstrap_servers
 
     def notify(self, context: Context) -> None:
         """
@@ -338,6 +367,7 @@ class KafkaDeadlineNotifier(BaseNotifier):
                 dag_id=dag_id,
                 message=alert_message,
                 metadata=metadata,
+                bootstrap_servers=self.bootstrap_servers,
             )
 
             if success:
@@ -474,6 +504,7 @@ class CompositeDeadlineNotifier(BaseNotifier):
         email_enabled: bool = False,
         email_recipients: Optional[List[str]] = None,
         email_subject: str = "",
+        bootstrap_servers: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -485,6 +516,9 @@ class CompositeDeadlineNotifier(BaseNotifier):
             email_enabled: Whether to send email notifications
             email_recipients: List of email addresses
             email_subject: Email subject line
+            bootstrap_servers: Tenant-specific Kafka cluster override for
+                the alert, if the tenant has one configured in
+                global_settings.yaml. Falls back to kafka_default when None.
         """
         super().__init__(**kwargs)
         self.topic = topic
@@ -492,9 +526,12 @@ class CompositeDeadlineNotifier(BaseNotifier):
         self.email_enabled = email_enabled
         self.email_recipients = email_recipients or []
         self.email_subject = email_subject
+        self.bootstrap_servers = bootstrap_servers
 
         # Initialize sub-notifiers
-        self._kafka_notifier = KafkaDeadlineNotifier(topic=topic, message=message)
+        self._kafka_notifier = KafkaDeadlineNotifier(
+            topic=topic, message=message, bootstrap_servers=bootstrap_servers
+        )
         self._email_notifier = EmailDeadlineNotifier(
             recipients=email_recipients, subject=email_subject
         )

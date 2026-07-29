@@ -9,11 +9,13 @@ import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from tenacity import RetryError
 
-from rlam_airflow_framework.validation import validate_identifier
+from rlam_airflow_framework.utils.validation import validate_identifier
 from rlam_airflow_framework.destinations.base import DestinationLoader
 from rlam_airflow_framework.destinations.primitives import (
     DataLoadError,
+    TransientDataLoadError,
     DEFAULT_RETRY_ATTEMPTS,
+    SNOWFLAKE_TRANSIENT_ERRORS,
     is_transient_snowflake_error,
     snowflake_retry,
 )
@@ -83,11 +85,13 @@ class StoredProcedureLoader(DestinationLoader):
 
         try:
             _execute_procedure()
-        except RetryError as e:
+        except (RetryError, *SNOWFLAKE_TRANSIENT_ERRORS) as e:
+            # snowflake_retry sets reraise=True (see snowflake_table.py's
+            # equivalent branch for why RetryError alone isn't enough here).
             logger.error(
                 "All retry attempts exhausted for procedure call", exc_info=True
             )
-            raise DataLoadError(
+            raise TransientDataLoadError(
                 f"Failed to call stored procedure after {DEFAULT_RETRY_ATTEMPTS} attempts",
                 destination=procedure_name,
                 original_error=e,

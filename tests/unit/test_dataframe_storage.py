@@ -15,6 +15,7 @@ from rlam_airflow_framework.taskflow_tasks import (
     _load_dataframe,
     _cleanup_dataframe,
 )
+from rlam_airflow_framework.taskflow.storage import DataFrameStorage
 
 
 class TestSaveDataFrame:
@@ -328,8 +329,6 @@ class TestEdgeCases:
 # =============================================================================
 # DataFrameStorage class tests (OOP API)
 # =============================================================================
-
-from rlam_airflow_framework.taskflow.storage import DataFrameStorage
 
 
 class TestDataFrameStorageClass:

@@ -1,5 +1,3 @@
-from rlam_airflow_framework.config.reader import load_yaml_file
-from rlam_airflow_framework.config.validator import ConfigValidator
 # File: tests/unit/test_edge_cases_config_loader.py
 """
 Edge case tests for ConfigLoader.
@@ -22,6 +20,7 @@ from unittest.mock import patch
 
 # Import actual implementation
 from rlam_airflow_framework.config import ConfigLoader, ConfigLoadError
+from rlam_airflow_framework.config.reader import load_yaml_file
 
 
 class TestConfigLoaderEmptyFiles:
@@ -38,7 +37,7 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 result = load_yaml_file(str(empty_file))
 
         assert result is None
@@ -57,7 +56,7 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 result = load_yaml_file(str(comments_file))
 
         assert result is None
@@ -73,7 +72,7 @@ class TestConfigLoaderEmptyFiles:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 result = load_yaml_file(str(whitespace_file))
 
         assert result is None
@@ -141,7 +140,7 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError) as exc_info:
                     load_yaml_file(str(invalid_file))
@@ -159,7 +158,7 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 # Should either parse or raise ConfigLoadError
                 try:
@@ -184,7 +183,7 @@ data_source:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 result = load_yaml_file(str(dup_file))
 
         # YAML spec: last value wins for duplicate keys
@@ -205,7 +204,7 @@ data_source: &source
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 # PyYAML's safe_load should handle this
                 try:
@@ -458,7 +457,7 @@ destination:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
                 # PyYAML handles BOM, but we should test it
                 try:
                     result = load_yaml_file(str(bom_file))
@@ -479,7 +478,7 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError) as exc_info:
                     load_yaml_file(str(config_dir / "nonexistent.yaml"))
@@ -493,7 +492,7 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError):
                     load_yaml_file("")
@@ -505,7 +504,7 @@ class TestConfigLoaderFileErrors:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 with pytest.raises(ConfigLoadError):
                     load_yaml_file(None)  # type: ignore[arg-type]
@@ -837,7 +836,7 @@ class TestConfigLoadErrorException:
 
         with patch.object(ConfigLoader, "_load_validation_config", return_value={}):
             with patch.object(ConfigLoader, "_load_schema_files", return_value={}):
-                loader = ConfigLoader(config_dir=str(config_dir))
+                ConfigLoader(config_dir=str(config_dir))
 
                 try:
                     load_yaml_file(str(invalid_file))

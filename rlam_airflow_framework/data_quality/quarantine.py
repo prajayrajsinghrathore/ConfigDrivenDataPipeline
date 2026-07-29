@@ -37,7 +37,15 @@ class QuarantineHandler:
         self.destination_config = config.get("destination", {})
         self.quarantine_config = self.destination_config.get("quarantine", {})
 
-        # Default quarantine table pattern
+        # Every pipeline belongs to a tenant (enforced at DAG-parse time by
+        # DAGFactoryV2._validate_destination_connections/create_dag_from_config),
+        # so this is always populated for a real pipeline config.
+        self.tenant_id = config.get("metadata", {}).get("tenant", "unknown")
+
+        # Default quarantine table pattern. Records from every tenant land
+        # here unless a pipeline overrides destination.quarantine, so the
+        # tenant_id column below (not the table name) is what a data steward
+        # must filter/authorize on to avoid viewing another tenant's records.
         self.default_table = "DQ_AUDIT.QUARANTINE_RECORDS"
 
         # HITL configuration
@@ -72,6 +80,7 @@ class QuarantineHandler:
         for _, row in invalid_df.iterrows():
             record = {
                 "quarantine_id": str(uuid.uuid4()),
+                "tenant_id": self.tenant_id,
                 "source_pipeline": source_pipeline,
                 "source_table": source_table,
                 "failed_checks": json.dumps(failed_checks),
@@ -143,8 +152,10 @@ def create_hitl_quarantine_approval_task(
     hitl_config = quarantine_config.get("hitl", {})
 
     # Build summary for approval UI
+    tenant_id = config.get("metadata", {}).get("tenant", "unknown")
     summary = {
         "dag_id": dag_id,
+        "tenant_id": tenant_id,
         "total_records": len(quarantine_records),
         "quarantine_time": datetime.now(timezone.utc).isoformat(),
         "failed_checks": [],

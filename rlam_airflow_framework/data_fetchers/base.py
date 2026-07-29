@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
 import pandas as pd
 
+from rlam_airflow_framework.utils.retry_policy import TransientError
+
 # =============================================================================
 # CENTRALIZED TIMEOUT CONFIGURATION
 # =============================================================================
@@ -33,6 +35,11 @@ class DataFetchError(Exception):
         self.source = source
         self.original_error = original_error
         super().__init__(f"[{source}] {message}")
+
+
+class TransientDataFetchError(DataFetchError, TransientError):
+    """A DataFetchError worth retrying at the Airflow task level (network
+    timeout, connection reset, 5xx/429 response, ...)."""
 
 
 class DataFetcher(ABC):

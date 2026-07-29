@@ -51,6 +51,7 @@ from datetime import timedelta
 from typing import Dict, Any, List, Optional, NamedTuple, cast
 import pendulum
 import structlog
+import urllib.parse
 
 # Import HITL operators for human approval workflows
     
@@ -153,23 +154,30 @@ class DAGFactoryV2:
                 f"All pipelines must belong to a tenant."
             )
 
+        # Reject pipelines that reference another tenant's connection_id
+        # before the DAG is even built (see resolve_connection_id's
+        # cross-tenant guard in tenant_context.py).
+        self._validate_destination_connections(config, tenant_id)
+
         source_name = data_source["name"]
         dag_id = self._resolve_dag_id(source_name, tenant_id)
 
         # Resolve the cross-cutting DAG settings via focused collaborators
-        schedule = self._resolve_schedule(schedule_config, dag_id)
+        is_partitioned = config.get("partition", {}).get("enabled", False)
+        schedule = self._resolve_schedule(schedule_config, dag_id, is_partitioned)
         tags = self._resolve_tags(tenant_id, schedule_config)
         default_args = self._create_default_args(tenant_id, metadata, schedule_config)
         pool = self._resolve_pool(tenant_id)
-        deadline = self._create_deadline_alert(dag_id, schedule_config)
+        tenant_pool_slots = self._get_tenant_pool_slots(tenant_id, pool)
+        deadline = self._create_deadline_alert(dag_id, schedule_config, tenant_id)
         inlets, outlets = self._create_assets(config)
 
         # Partition planning may replace the schedule interval with a timetable
-        schedule_interval, is_partitioned = self._plan_partitioning(
-            config, schedule, inlets, dag_id, source_name
+        schedule_interval, is_partitioned, max_fan_out = self._plan_partitioning(
+            config, schedule, inlets, dag_id, source_name, tenant_pool_slots
         )
         max_active_runs = self._compute_max_active_runs(
-            schedule_config, is_partitioned, pool, tenant_id, dag_id
+            schedule_config, is_partitioned, tenant_pool_slots, dag_id
         )
 
         dag_kwargs = {
@@ -183,7 +191,14 @@ class DAGFactoryV2:
             "max_active_runs": max_active_runs,
             "default_args": default_args,
             "deadline": deadline,
-            "params": {"tenant_id": tenant_id, "tenant_pool": pool},
+            # max_fan_out is surfaced here so create_all_dags can aggregate
+            # per-tenant declared concurrency for admission control without
+            # re-deriving partition config.
+            "params": {
+                "tenant_id": tenant_id,
+                "tenant_pool": pool,
+                "max_fan_out": max_fan_out,
+            },
         }
 
         if "rerun_with_latest_version" in metadata:
@@ -192,7 +207,7 @@ class DAGFactoryV2:
         @dag(**dag_kwargs)
         def create_pipeline():
             """TaskFlow pipeline definition (see _build_task_graph)."""
-            self._build_task_graph(config, pool, inlets, outlets, dag_id)
+            self._build_task_graph(config, pool, inlets, outlets, dag_id, tenant_id)
 
         # cast: the @dag stub types the call as the wrapped function's return
         # (None), but it returns the built DAG at runtime
@@ -208,6 +223,37 @@ class DAGFactoryV2:
 
         return pipeline_dag
 
+    def _validate_destination_connections(
+        self, config: Dict[str, Any], tenant_id: str
+    ) -> None:
+        """
+        Validate that every destination connection_id declared in this
+        pipeline's YAML belongs to this tenant.
+
+        Destination classes read ``connection_id`` straight off their
+        config dict, so an unvalidated YAML could reference another
+        tenant's registered connection and gain access to its warehouse.
+        Raises here at DAG-parse time so a spoofed config fails loudly
+        instead of quietly reading/writing another tenant's data at
+        runtime.
+        """
+        if not self.tenant_context:
+            return
+
+        destination = config.get("destination", {})
+        dest_blocks = []
+        if "connection_id" in destination or "type" in destination:
+            dest_blocks.append((destination.get("type", "unknown"), destination))
+        for key in ("primary", "secondary", "quarantine"):
+            block = destination.get(key)
+            if isinstance(block, dict):
+                dest_blocks.append((block.get("type", key), block))
+
+        for dest_type, dest_config in dest_blocks:
+            # Raises TenantValidationError if connection_id belongs to
+            # a different tenant.
+            self.tenant_context.resolve_connection_id(dest_config, dest_type, tenant_id)
+
     def _resolve_dag_id(self, source_name: str, tenant_id: str) -> str:
         """Generate the tenant-prefixed DAG id."""
         if self.tenant_context:
@@ -215,13 +261,28 @@ class DAGFactoryV2:
         return f"{tenant_id}_{source_name}"
 
     def _resolve_schedule(
-        self, schedule_config: Dict[str, Any], dag_id: str
+        self, schedule_config: Dict[str, Any], dag_id: str, is_partitioned: bool = False
     ) -> _ScheduleSettings:
         """Parse schedule config into timezone-aware scheduling settings."""
         timezone = self._get_timezone(schedule_config, dag_id)
-        interval = schedule_config.get("interval", "@daily")
+        
+        default_interval = None if is_partitioned else "@daily"
+        interval = schedule_config.get("interval", default_interval)
+        
+        catchup = schedule_config.get("catchup", False)
+        start_date_str = schedule_config.get("start_date")
+        
+        if not start_date_str:
+            if catchup:
+                raise ValueError(
+                    f"Configuration error for '{dag_id}': "
+                    "Cannot enable 'catchup: true' without an explicitly configured 'start_date'."
+                )
+            # Safe default for non-catchup pipelines
+            start_date_str = pendulum.today(timezone).subtract(days=1).to_date_string()
+            
         start_date = self._parse_datetime_with_timezone(
-            schedule_config.get("start_date", "2024-01-01"),
+            start_date_str,
             timezone,
             dag_id,
             "start_date",
@@ -231,7 +292,6 @@ class DAGFactoryV2:
             end_date = self._parse_datetime_with_timezone(
                 schedule_config["end_date"], timezone, dag_id, "end_date"
             )
-        catchup = schedule_config.get("catchup", False)
         return _ScheduleSettings(timezone, interval, start_date, end_date, catchup)
 
     def _resolve_tags(
@@ -251,6 +311,35 @@ class DAGFactoryV2:
             return self.tenant_context.get_tenant_pool(tenant_id)
         return None
 
+    def _get_tenant_pool_slots(
+        self, tenant_id: str, pool: Optional[str]
+    ) -> Optional[int]:
+        """Look up the declared slot count for a tenant's pool, if any."""
+        if not pool:
+            return None
+        tenants_config = self.global_settings.get("tenants", {})
+        tenant_config = tenants_config.get(tenant_id, {})
+        return tenant_config.get("slots")
+
+    def _resolve_kafka_bootstrap_servers(
+        self, event_config: Dict[str, Any], tenant_id: str
+    ) -> Optional[str]:
+        """
+        Resolve Kafka bootstrap servers with 3-tier priority:
+        1. Explicit event.bootstrap_servers in the pipeline config
+        2. Tenant's kafka.bootstrap_servers in global_settings.yaml
+        3. None (health_checks falls back to the global KAFKA_BOOTSTRAP_SERVERS)
+
+        Every tenant shares one Kafka cluster today, so tiers 1-2 are unused
+        in practice - this only matters once a tenant or pipeline needs to
+        point at a different cluster.
+        """
+        if "bootstrap_servers" in event_config:
+            return event_config["bootstrap_servers"]
+        if self.tenant_context:
+            return self.tenant_context.get_tenant_kafka_bootstrap_servers(tenant_id)
+        return None
+
     def _plan_partitioning(
         self,
         config: Dict[str, Any],
@@ -258,13 +347,16 @@ class DAGFactoryV2:
         inlets: List[Asset],
         dag_id: str,
         source_name: str,
-    ) -> tuple[Any, bool]:
+        tenant_pool_slots: Optional[int] = None,
+    ) -> tuple[Any, bool, Optional[int]]:
         """
         Resolve partitioning/incremental config into a concrete schedule.
 
         Returns:
-            Tuple of (schedule_interval, is_partitioned). For partitioned DAGs
-            the interval is replaced with the appropriate timetable/mapper.
+            Tuple of (schedule_interval, is_partitioned, max_fan_out). For
+            partitioned DAGs the interval is replaced with the appropriate
+            timetable/mapper and max_fan_out is the effective (capped) value;
+            for non-partitioned DAGs max_fan_out is None.
 
         Raises:
             ValueError: If partition + incremental are combined, or a cron
@@ -286,7 +378,7 @@ class DAGFactoryV2:
             )
 
         if not is_partitioned:
-            return schedule_interval, False
+            return schedule_interval, False, None
 
         granularity = partition_config.get("granularity", "day")
         mapper_type = partition_config.get("mapper", "fan_out")
@@ -309,6 +401,13 @@ class DAGFactoryV2:
                 dag_id=dag_id,
             )
             max_fan_out = global_max_keys
+
+        if tenant_pool_slots is not None and max_fan_out > tenant_pool_slots:
+            log.warning(
+                f"max_fan_out ({max_fan_out}) significantly exceeds tenant pool "
+                f"slots ({tenant_pool_slots}). This will cause severe queuing.",
+                dag_id=dag_id,
+            )
 
         window_classes = {
             "day": DayWindow,
@@ -356,19 +455,13 @@ class DAGFactoryV2:
         if partition_config.get("runtime_assigned"):
             schedule_interval = PartitionedAtRuntime()
         else:
-            is_time_schedule = False
-            if isinstance(schedule_interval, str):
-                schedule_interval_clean = schedule_interval.strip().lower()
-                if schedule_interval_clean.startswith("@") or len(
-                    schedule_interval.split()
-                ) in [5, 6]:
-                    is_time_schedule = True
+            is_time_schedule = (schedule_interval is not None)
 
             if is_time_schedule:
                 if "mapper" in partition_config or "wait_policy" in partition_config:
                     raise ValueError(
                         f"Configuration error for '{source_name}': "
-                        f"Cron schedules cannot be combined with 'mapper' or 'wait_policy'."
+                        f"Time schedules (interval: '{schedule_interval}') cannot be combined with 'mapper' or 'wait_policy'. Set 'interval: null' to use asset-driven scheduling."
                     )
                 cron_map = {
                     "@hourly": "0 * * * *",
@@ -377,7 +470,34 @@ class DAGFactoryV2:
                     "@monthly": "0 0 1 * *",
                     "@yearly": "0 0 1 1 *",
                 }
-                cron_str = cron_map.get(schedule_interval, schedule_interval)
+                # CronPartitionTimetable only takes a cron string — the cron
+                # firing cadence IS the partition boundary, it never
+                # consults partition.granularity/window_cls. If a pipeline
+                # explicitly declares a granularity that doesn't match the
+                # schedule's own cadence (e.g. granularity: month with
+                # interval: '@daily'), it would silently get daily
+                # partitions instead of the monthly ones it expects.
+                cron_interval_granularity = {
+                    "@hourly": "hour",
+                    "@daily": "day",
+                    "@weekly": "week",
+                    "@monthly": "month",
+                    "@yearly": "year",
+                }
+                interval_str = str(schedule_interval)
+                if "granularity" in partition_config:
+                    implied_granularity = cron_interval_granularity.get(interval_str)
+                    if implied_granularity is not None and implied_granularity != granularity:
+                        raise ValueError(
+                            f"Configuration error for '{source_name}': "
+                            f"schedule interval '{interval_str}' implies "
+                            f"'{implied_granularity}' partitions, but "
+                            f"'partition.granularity' is set to '{granularity}'. "
+                            f"Align the two (e.g. interval: '@monthly' for "
+                            f"granularity: 'month') or remove 'granularity' to "
+                            f"accept the schedule's own cadence."
+                        )
+                cron_str = cron_map.get(interval_str, interval_str)
                 schedule_interval = CronPartitionTimetable(cron_str, timezone=timezone)
             else:
                 schedule_interval = PartitionedAssetTimetable(
@@ -385,36 +505,27 @@ class DAGFactoryV2:
                     default_partition_mapper=mapper,
                 )
 
-        return schedule_interval, True
+        return schedule_interval, True, max_fan_out
 
     def _compute_max_active_runs(
         self,
         schedule_config: Dict[str, Any],
         is_partitioned: bool,
-        pool: Optional[str],
-        tenant_id: str,
+        tenant_pool_slots: Optional[int],
         dag_id: str,
     ) -> int:
         """
         Determine max_active_runs. Non-partitioned DAGs are always 1;
-        partitioned DAGs derive from tenant pool slots (or explicit override,
-        clamped to the pool).
+        partitioned DAGs default to 1 and require an explicit override
+        (clamped to the tenant pool) to request more - a tenant's pool is
+        shared across all its pipelines, so a per-DAG default derived from
+        slots alone would over-subscribe once a tenant has more than one.
         """
         if not is_partitioned:
             return 1
 
         explicit_max_active_runs = schedule_config.get("max_active_runs")
-
-        tenant_pool_slots = None
-        if pool:
-            tenants_config = self.global_settings.get("tenants", {})
-            tenant_config = tenants_config.get(tenant_id, {})
-            tenant_pool_slots = tenant_config.get("slots")
-
-        if tenant_pool_slots is not None:
-            default_runs = min(8, max(1, tenant_pool_slots // 2))
-        else:
-            default_runs = 8
+        default_runs = 1
 
         if explicit_max_active_runs is None:
             return default_runs
@@ -437,6 +548,7 @@ class DAGFactoryV2:
         inlets: List[Asset],
         outlets: List[Asset],
         dag_id: str,
+        tenant_id: str,
     ) -> None:
         """
         Wire the TaskFlow task graph inside an active @dag context.
@@ -456,14 +568,24 @@ class DAGFactoryV2:
 
         kafka_health_task = None
         if has_kafka_destination:
+            if wait_for_kafka_health is None:
+                raise RuntimeError(
+                    f"DAG '{dag_id}' configures event.topic but the Kafka "
+                    f"health sensor is unavailable (Airflow's task/"
+                    f"PokeReturnValue could not be imported by health_checks)."
+                )
+            bootstrap_servers = self._resolve_kafka_bootstrap_servers(
+                event_config, tenant_id
+            )
             kafka_health_task = wait_for_kafka_health.override(
                 task_id="check_kafka_health",
                 pool=pool,
-            )()
+            )(bootstrap_servers=bootstrap_servers)
             log.debug(
                 "Added Kafka health sensor to DAG",
                 dag_id=dag_id,
                 topic=event_config.get("topic"),
+                bootstrap_servers=bootstrap_servers,
             )
 
         # Task 1: Data Ingestion (with inlet assets for lineage)
@@ -619,7 +741,7 @@ Please review the quarantined records.
             kafka_health_task >> ingest_task  # pyright: ignore[reportUnusedExpression]
 
     def _create_deadline_alert(
-        self, dag_id: str, schedule_config: Dict[str, Any]
+        self, dag_id: str, schedule_config: Dict[str, Any], tenant_id: str
     ) -> Optional[List[DeadlineAlert]]:
         """
         Create deadline alert configuration from schedule config.
@@ -630,6 +752,10 @@ Please review the quarantined records.
         Args:
             dag_id: DAG identifier for alert messages
             schedule_config: Schedule configuration from YAML
+            tenant_id: Tenant identifier, used to resolve a tenant-specific
+                Kafka cluster for the alert (see
+                _resolve_kafka_bootstrap_servers) instead of always using
+                the shared kafka_default connection.
 
         Returns:
             List of DeadlineAlerts or None if not configured
@@ -663,7 +789,12 @@ Please review the quarantined records.
 
             # Get Kafka topic for alerts
             kafka_topic = tier.get("kafka_topic", "pipeline-alerts")
-            
+
+            # Tenant-specific Kafka cluster override (falls back to the
+            # shared kafka_default connection) so an isolated tenant's
+            # deadline alerts don't leak into the global broker.
+            bootstrap_servers = self._resolve_kafka_bootstrap_servers(tier, tenant_id)
+
             # Reference
             ref_str = tier.get("reference", "queued_at").upper()
             reference = DeadlineReference.AVERAGE_RUNTIME() if "AVERAGE" in ref_str else DeadlineReference.DAGRUN_QUEUED_AT
@@ -689,6 +820,7 @@ Please review the quarantined records.
                             "email_enabled": email_enabled,
                             "email_recipients": email_recipients,
                             "email_subject": f"🚨 Deadline Alert: {dag_id}",
+                            "bootstrap_servers": bootstrap_servers,
                         },
                     ),
                 )
@@ -755,7 +887,11 @@ Please review the quarantined records.
             account = (
                 primary_dest.get("account") or primary_dest.get("conn_id") or "default"
             )
-            outlet_uri = f"snowflake://{account}/{database}/{schema}/{table}"
+            account_safe = urllib.parse.quote(account, safe="")
+            database_safe = urllib.parse.quote(database, safe="")
+            schema_safe = urllib.parse.quote(schema, safe="")
+            table_safe = urllib.parse.quote(table, safe="")
+            outlet_uri = f"snowflake://{account_safe}/{database_safe}/{schema_safe}/{table_safe}"
         elif dest_type == "object_storage":
             uri = primary_dest.get("uri", "")
             path = primary_dest.get("path", "")
@@ -902,7 +1038,52 @@ Please review the quarantined records.
                 source_name = config.get("data_source", {}).get("name", "unknown")
                 log.error("Error creating TaskFlow DAG", source=source_name, error=str(e))
 
+        self._check_tenant_admission(dags)
         return dags
+
+    def _check_tenant_admission(self, dags: List[DAG]) -> None:
+        """
+        Warn when a tenant's aggregate declared concurrency across all its
+        pipelines heavily oversubscribes its pool.
+
+        create_all_dags is the only place with visibility across every
+        tenant's pipelines at once, so it's where cross-DAG oversubscription
+        (invisible to any single DAG's own config) can actually be caught.
+        Warns rather than raises so one misconfigured pipeline doesn't take
+        down a tenant's otherwise-healthy DAGs; the equivalent hard-fail
+        check runs at PR time in tests/unit/test_tenant_quotas.py.
+        """
+        multiplier = self.global_settings.get("platform", {}).get(
+            "max_tenant_oversubscription", 5
+        )
+        tenants_config = self.global_settings.get("tenants", {})
+
+        aggregate_by_tenant: Dict[str, int] = {}
+        for dag_instance in dags:
+            tenant_id = dag_instance.params.get("tenant_id")
+            if not tenant_id:
+                continue
+            max_fan_out = dag_instance.params.get("max_fan_out") or 1
+            max_active_runs = dag_instance.max_active_runs or 1
+            aggregate_by_tenant[tenant_id] = (
+                aggregate_by_tenant.get(tenant_id, 0)
+                + max_active_runs * max_fan_out
+            )
+
+        for tenant_id, aggregate in aggregate_by_tenant.items():
+            tenant_pool_slots = tenants_config.get(tenant_id, {}).get("slots")
+            if tenant_pool_slots is None:
+                continue
+            threshold = tenant_pool_slots * multiplier
+            if aggregate > threshold:
+                log.warning(
+                    f"Tenant '{tenant_id}' aggregate declared concurrency "
+                    f"({aggregate}) exceeds {multiplier}x its pool size "
+                    f"({tenant_pool_slots} slots, threshold {threshold}). "
+                    f"Pipelines will queue heavily; reduce max_active_runs/"
+                    f"max_fan_out or request more pool slots.",
+                    tenant_id=tenant_id,
+                )
 
     def _detect_bundle_name(self) -> str:
         """
@@ -1019,7 +1200,7 @@ Please review the quarantined records.
             
         # Apply transient retry policy if configured
         if retry_config.get("policy") == "transient":
-            from rlam_airflow_framework.retry_policy import build_transient_retry_policy
+            from rlam_airflow_framework.utils.retry_policy import build_transient_retry_policy
             default_args["retry_policy"] = build_transient_retry_policy(retry_config)
         
         return default_args
