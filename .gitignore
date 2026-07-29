@@ -211,3 +211,6 @@ tests/airflow_home/
 
 # Airflow runtime logs (docker volume mount)
 logs/
+
+# Claude
+.claude
