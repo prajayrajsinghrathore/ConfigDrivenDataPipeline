@@ -378,8 +378,9 @@ class TestDataQualityCheckerBuildSodaCL:
 
         result = engine._build_sodacl_yaml()
         assert result is not None
-        assert "checks for test_table:" in result
-        assert "row_count > 100" in result
+        assert "dataset: pipeline_duckdb/main/dq_candidate" in result
+        assert "row_count:" in result
+        assert "must_be_greater_than_or_equal_to: 100" in result
 
     def test_build_sodacl_missing_count(self):
         """Test building SodaCL for missing_count check."""
@@ -390,9 +391,10 @@ class TestDataQualityCheckerBuildSodaCL:
         )
 
         result = engine._build_sodacl_yaml()
-        assert result is not None
-        assert "missing_count(email) = 0" in result
-
+        assert "dataset: pipeline_duckdb/main/dq_candidate" in result
+        assert "- name: email" in result
+        assert "- missing:" in result
+        assert "must_be_less_than_or_equal_to: 0" in result
     def test_build_sodacl_duplicate_count(self):
         """Test building SodaCL for duplicate_count check."""
         engine = SodaEngine(
@@ -402,9 +404,10 @@ class TestDataQualityCheckerBuildSodaCL:
         )
 
         result = engine._build_sodacl_yaml()
-        assert result is not None
-        assert "duplicate_count(id) = 0" in result
-
+        assert "dataset: pipeline_duckdb/main/dq_candidate" in result
+        assert "- name: id" in result
+        assert "- duplicate:" in result
+        assert "must_be_less_than_or_equal_to: 0" in result
     def test_build_sodacl_multiple_checks(self):
         """Test building SodaCL with multiple checks."""
         engine = SodaEngine(
@@ -420,11 +423,11 @@ class TestDataQualityCheckerBuildSodaCL:
         )
 
         result = engine._build_sodacl_yaml()
-        assert result is not None
-        assert "row_count > 1" in result
-        assert "missing_count(id) = 0" in result
-        assert "duplicate_count(id) = 0" in result
-
+        assert "dataset: pipeline_duckdb/main/dq_candidate" in result
+        assert "row_count:" in result
+        assert "- name: id" in result
+        assert "- missing:" in result
+        assert "- duplicate:" in result
 
 class TestDataQualityCheckerQualityGates:
     """Test ValidationEngine._determine_status() quality gate logic."""

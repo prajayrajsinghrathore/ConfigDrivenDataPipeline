@@ -13,18 +13,11 @@ from typing import Dict, Any, List, Optional, Tuple, cast
 import structlog
 
 try:
-    from soda.scan import Scan  # pyright: ignore[reportMissingImports]
-
+    from soda_core.contracts import verify_contract_locally
+    from soda_duckdb import DuckDBDataSource
     SODA_AVAILABLE = True
 except ImportError:
     SODA_AVAILABLE = False
-
-try:
-    from soda_core.contracts import verify_contract_locally
-    from soda_duckdb import DuckDBDataSource
-    SODA4_AVAILABLE = True
-except ImportError:
-    SODA4_AVAILABLE = False
 
 from rlam_airflow_framework.data_quality.registry import QUALITY_CHECK_REGISTRY
 
@@ -58,7 +51,7 @@ class ValidationEngine:
 
 
 
-class Soda4ContractEngine(ValidationEngine):
+class SodaEngine(ValidationEngine):
     def __init__(self, source_name: str, quality_gates: Dict[str, Any], soda_checks: Dict[str, Any]):
         super().__init__(source_name, quality_gates)
         self.soda_checks = soda_checks
@@ -72,7 +65,7 @@ class Soda4ContractEngine(ValidationEngine):
         ``checker.py`` isinstance-checks this engine and calls it explicitly
         rather than dispatching polymorphically through the base method.
         """
-        if not SODA4_AVAILABLE:
+        if not SODA_AVAILABLE:
             log.warning("soda-duckdb or soda-core contracts not available")
             results["status"] = "error"
             results["error"] = "soda-core 4.0 not available"
@@ -217,116 +210,6 @@ class Soda4ContractEngine(ValidationEngine):
             sodacl_lines.extend(columns_yaml)
             
         return "\n".join(sodacl_lines)
-
-
-class SodaEngine(ValidationEngine):
-    """Runs checks via Soda Core, falling back to an error result on failure."""
-
-    def __init__(
-        self, source_name: str, quality_gates: Dict[str, Any], soda_checks: Dict[str, Any]
-    ):
-        super().__init__(source_name, quality_gates)
-        self.soda_checks = soda_checks
-
-    def run(
-        self, df: pd.DataFrame, results: Dict[str, Any]
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-        try:
-            scan = Scan()
-            scan.set_scan_definition_name(f"{self.source_name}_scan")
-            scan.set_data_source_name("pandas_df")
-
-            # Add pandas DataFrame as data source
-            scan.add_pandas_dataframe(dataset_name=self.source_name, pandas_df=df)
-
-            # Build SodaCL checks from config
-            sodacl_yaml = self._build_sodacl_yaml()
-            if sodacl_yaml:
-                scan.add_sodacl_yaml_str(sodacl_yaml)
-
-            # Execute scan
-            scan.execute()
-
-            # Process results
-            scan_results = scan.get_scan_results()
-
-            # Extract check outcomes
-            for check in scan_results.get("checks", []):
-                check_result = {
-                    "name": check.get("name", "unknown"),
-                    "outcome": check.get("outcome", "unknown"),
-                    "column": check.get("column"),
-                    "diagnostics": check.get("diagnostics", {}),
-                }
-                results["checks"].append(check_result)
-
-                if check_result["outcome"] == "pass":
-                    results["passed"] += 1
-                elif check_result["outcome"] == "fail":
-                    results["failed"] += 1
-                elif check_result["outcome"] == "warn":
-                    results["warnings"] += 1
-
-            # Calculate pass rate
-            total_checks = results["passed"] + results["failed"] + results["warnings"]
-            if total_checks > 0:
-                results["pass_rate"] = results["passed"] / total_checks
-
-            # Determine overall status
-            results["status"] = self._determine_status(results)
-
-            # Get invalid row indices from failed row-level checks
-            invalid_indices = self._extract_invalid_indices(scan_results)
-
-            # Split valid and invalid records
-            if invalid_indices:
-                invalid_df = df.loc[df.index.isin(invalid_indices)].copy()
-                valid_df = df.loc[~df.index.isin(invalid_indices)].copy()
-            else:
-                valid_df = df.copy()
-                invalid_df = pd.DataFrame()
-
-            results["valid_rows"] = len(valid_df)
-            results["invalid_rows"] = len(invalid_df)
-
-            return valid_df, invalid_df, results
-
-        except Exception as e:
-            log.error("Soda scan failed", error=str(e))
-            results["status"] = "error"
-            results["error"] = str(e)
-            return df, pd.DataFrame(), results
-
-    def _build_sodacl_yaml(self) -> Optional[str]:
-        """
-        Build SodaCL YAML from config.
-
-        Each check renders itself via its strategy's ``to_sodacl`` (checks with
-        no SodaCL form, or missing a required column, contribute no line).
-        """
-        checks = self.soda_checks.get("checks", [])
-        if not checks:
-            return None
-
-        sodacl_lines = [f"checks for {self.source_name}:"]
-
-        for check in checks:
-            strategy = QUALITY_CHECK_REGISTRY.get(check.get("type"))
-            if strategy is None:
-                continue
-            line = strategy.to_sodacl(check)
-            if line:
-                sodacl_lines.append(line)
-
-        return "\n".join(sodacl_lines)
-
-    def _extract_invalid_indices(self, scan_results: Dict[str, Any]) -> List[int]:
-        """
-        Extract indices of invalid rows from Soda scan results.
-        """
-        # This would need to parse Soda's diagnostic output
-        # For now, return empty list (Soda doesn't always return row-level details)
-        return []
 
 
 class BasicEngine(ValidationEngine):

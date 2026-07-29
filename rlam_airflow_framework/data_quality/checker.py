@@ -15,10 +15,9 @@ import structlog
 from rlam_airflow_framework.kafka_publisher import kafka_publisher
 from rlam_airflow_framework.data_quality.engines import (
     SODA_AVAILABLE,
-    SODA4_AVAILABLE,
+    SODA_AVAILABLE,
     SodaEngine,
-    Soda4ContractEngine,
-    BasicEngine,
+        BasicEngine,
     LegacyEngine,
 )
 
@@ -98,7 +97,7 @@ class DataQualityChecker:
         results["total_rows"] = 0 # Will be populated by engine
 
         # Dual validation fallback logic
-        if isinstance(engine, Soda4ContractEngine):
+        if isinstance(engine, SodaEngine):
             log.info("Running Soda 4 Contract Validation on Parquet directly")
             valid_df_path, invalid_df_path, results = engine.run_on_path(df_path, results)
         else:
@@ -132,8 +131,8 @@ class DataQualityChecker:
                 self.config.get("validation_rules", []),
             )
 
-        if SODA4_AVAILABLE:
-            return Soda4ContractEngine(self.source_name, self.quality_gates, self.soda_checks)
+        if SODA_AVAILABLE:
+            return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
             
         if SODA_AVAILABLE:
             return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
