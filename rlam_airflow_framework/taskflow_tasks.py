@@ -320,7 +320,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
             
             # Post-fetch incremental filtering via DuckDB
             if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
-                import duckdb
+                import duckdb  # type: ignore
                 import tempfile
                 
                 temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
@@ -337,7 +337,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
                 log.info("Applied watermark filter via DuckDB", watermark_column=col, watermark_value=val)
             
             # Get row count via DuckDB
-            import duckdb
+            import duckdb  # type: ignore
             try:
                 row_count = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()[0]
             except Exception:

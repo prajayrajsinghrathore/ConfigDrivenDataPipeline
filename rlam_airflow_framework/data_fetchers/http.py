@@ -12,7 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import pandas as pd
-import duckdb
+import duckdb  # type: ignore
 import structlog
 
 from rlam_airflow_framework.data_fetchers.base import (

@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 import paramiko
 import pandas as pd
-import duckdb
+import duckdb  # type: ignore
 import structlog
 
 # Task SDK Connection: resolves via the execution API on workers (airflow.models
