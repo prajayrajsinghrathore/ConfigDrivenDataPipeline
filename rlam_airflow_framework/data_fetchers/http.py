@@ -197,10 +197,11 @@ class HttpFetcher(DataFetcher):
             ) from e
 
         except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
             log.error(
                 "HTTP error",
                 trace_id=trace_id,
-                status=response.status_code,
+                status=status_code,
                 error=str(e),
             )
             # The connection-pool adapter already retries RETRYABLE_STATUS_CODES;
@@ -209,7 +210,7 @@ class HttpFetcher(DataFetcher):
             # (4xx auth/not-found/etc.) are deterministic - retrying won't help.
             error_cls = (
                 TransientDataFetchError
-                if response.status_code in RETRYABLE_STATUS_CODES
+                if status_code in RETRYABLE_STATUS_CODES
                 else DataFetchError
             )
             raise error_cls(
