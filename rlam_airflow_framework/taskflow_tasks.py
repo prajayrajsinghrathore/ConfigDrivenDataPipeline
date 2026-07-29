@@ -45,7 +45,6 @@ from rlam_airflow_framework.data_quality import (
     process_hitl_approval_result,
 )
 from rlam_airflow_framework.kafka_publisher import kafka_publisher
-from rlam_airflow_framework.transformers import apply_pipeline_transformations
 
 from rlam_airflow_framework.taskflow.context import TaskExecutionContext
 from rlam_airflow_framework.taskflow.storage import DataFrameStorage
@@ -339,7 +338,8 @@ def ingest_data(config: Dict[str, Any]) -> str:
             # Get row count via DuckDB
             import duckdb  # type: ignore
             try:
-                row_count = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()[0]
+                res = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()
+                row_count = res[0] if res else 0
             except Exception:
                 row_count = 0
                 
@@ -439,17 +439,53 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
     topic = config.get("event", {}).get("topic", "pipeline-events")
 
     try:
-        # Apply the unified, ordered transformations pipeline
-        transformations_list = config.get("transformations", [])
-        if transformations_list:
-            df = apply_pipeline_transformations(
-                df, transformations_list, ctx.correlation_id
-            )
+        from rlam_airflow_framework.engine.context import ExecutionContext
+        from rlam_airflow_framework.engine.config import PipelineConfig
+        from rlam_airflow_framework.engine.planner import PipelinePlanner
+        from rlam_airflow_framework.engine.io import ParquetDataSource, ParquetDataSink
+        from rlam_airflow_framework.engine.base import SourceSpec, DestinationSpec
+        
+        ctx_engine = ExecutionContext(
+            correlation_id=ctx.correlation_id,
+            pipeline_id=ctx.dag_id,
+            task_id=ctx.task_id,
+            attempt_number=getattr(ctx, "try_number", 1),
+            logger=log
+        )
+        
+        source_spec = SourceSpec(path=str(df_path), format="parquet")
+        dest_spec = DestinationSpec(path=str(storage.get_path(ctx.task_id, ctx.run_id)), format="parquet")
+        
+        # 1. Validation & Planning
+        pipeline_config = PipelineConfig.model_validate(config)
+        plan = PipelinePlanner.create_plan(pipeline_config, source_spec, dest_spec)
+        
+        log.info("Execution Plan generated:\n" + plan.explain(), correlation_id=ctx.correlation_id)
+        
+        # 2. Execution
+        data_source = ParquetDataSource()
+        data = data_source.load(source_spec, ctx_engine)
+        
+        from rlam_airflow_framework.engine.planner import PlannedStep
+        for planned_step in plan.steps:
+            if isinstance(planned_step, PlannedStep):
+                data = planned_step.transformer.transform(data, planned_step.config, ctx_engine)
+            else:
+                # BackendConversionStep or DuckDBStage
+                data = planned_step.transform(data, ctx_engine)
+            
+        # 3. Sink
+        data_sink = ParquetDataSink()
+        write_result = data_sink.save(data, dest_spec, ctx_engine)
+        
+        # We can't use len(df) directly anymore since it's lazy out-of-core
+        row_count = write_result.row_count or 0
 
         log.info(
             "Data transformation complete",
             correlation_id=ctx.correlation_id,
-            rows=len(df),
+            rows=row_count,
+            destination=write_result.destination,
         )
 
         # Publish success event
@@ -458,14 +494,13 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
             task_id=ctx.task_id,
             event_type="transformation_completed",
             status="success",
-            message=f"Transformed {len(df)} rows",
+            message=f"Transformed data to {write_result.destination}",
             execution_date=datetime.now(timezone.utc),
             topic=topic,
         )
 
-        result_path = storage.save(df, ctx.task_id, ctx.run_id)
         storage.cleanup(df_path)
-        return result_path
+        return write_result.destination
 
     except Exception as e:
         log.error(

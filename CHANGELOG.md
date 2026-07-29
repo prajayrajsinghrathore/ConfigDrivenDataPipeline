@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] - 2026-07-29
 
+### Engine Modernization
+- **Out-of-Core Federated Lookups**: Re-architected `SnowflakeLookupProvider` to use native PyArrow batching (`fetch_arrow_batches()`) instead of loading full result sets into Pandas DataFrames. Streamed batches are dynamically staged as local Parquet partitions, allowing DuckDB to execute native out-of-core `LEFT JOIN` aggregations entirely isolated from Airflow Worker memory limits.
+- **Hybrid Pipeline Transformation Engine**: Upgraded the core pipeline execution layer. Validated configuration boundaries are now dynamically resolved to `DataBackend` engines (DuckDB/Polars), strictly guarding against legacy Pandas contamination.
+
+
 ### Security & Multi-Tenancy
 - **Tenant Connection Spoofing**: Added DAG-parse time validation (`_validate_destination_connections`) to ensure tenants cannot spoof connections registered to other tenants.
 - **Path Traversal Sandboxing**: Hardened `LocalFileLoader` with `sanitize_for_filename` to explicitly reject colon-bearing segments and `../` path traversal, enforcing strict sandboxing inside the worker pod.
