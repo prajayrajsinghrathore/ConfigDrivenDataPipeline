@@ -213,8 +213,9 @@ class HttpFetcher(DataFetcher):
                 if status_code in RETRYABLE_STATUS_CODES
                 else DataFetchError
             )
+            reason = e.response.reason if e.response is not None else "Unknown Error"
             raise error_cls(
-                f"HTTP {response.status_code}: {response.reason}",
+                f"HTTP {status_code}: {reason}",
                 source=url,
                 original_error=e,
             ) from e
