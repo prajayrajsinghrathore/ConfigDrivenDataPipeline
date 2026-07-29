@@ -178,8 +178,9 @@ class TestObjectStorageLoader:
         )
         assert "empty DataFrame" in result
 
-    def test_connection_error_during_upload_is_transient(self):
-        write_target = ObjectStoragePath.return_value.parent.__truediv__.return_value  # pyright: ignore[reportAttributeAccessIssue]
+    @patch("rlam_airflow_framework.destinations.object_storage.ObjectStoragePath")
+    def test_connection_error_during_upload_is_transient(self, mock_osp):
+        write_target = mock_osp.return_value.parent.__truediv__.return_value
         write_target.write_bytes.side_effect = ConnectionError("refused")
         try:
             df = pd.DataFrame({"a": [1]})
@@ -190,8 +191,9 @@ class TestObjectStorageLoader:
         finally:
             write_target.write_bytes.side_effect = None
 
-    def test_unexpected_error_during_upload_is_deterministic(self):
-        write_target = ObjectStoragePath.return_value.parent.__truediv__.return_value  # pyright: ignore[reportAttributeAccessIssue]
+    @patch("rlam_airflow_framework.destinations.object_storage.ObjectStoragePath")
+    def test_unexpected_error_during_upload_is_deterministic(self, mock_osp):
+        write_target = mock_osp.return_value.parent.__truediv__.return_value
         write_target.write_bytes.side_effect = RuntimeError("permission denied")
         try:
             df = pd.DataFrame({"a": [1]})
