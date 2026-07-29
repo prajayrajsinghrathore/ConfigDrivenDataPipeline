@@ -53,13 +53,15 @@ class DataFrameStorage:
     # Public API
     # ------------------------------------------------------------------
 
+    def get_path(self, task_id: str, run_id: str) -> Path:
+        """Get the expected path for a parquet file."""
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{task_id}_{run_id}.parquet"
+        return self._base_dir / filename
+
     def save(self, df: pd.DataFrame, task_id: str, run_id: str) -> str:
         """Save *df* to a parquet file and return the absolute path."""
-        # Ensure directory exists (in case constructor creation failed)
-        self._base_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = f"{task_id}_{run_id}.parquet"
-        filepath = self._base_dir / filename
+        filepath = self.get_path(task_id, run_id)
         df.to_parquet(filepath, index=False, compression="snappy")
         log.info(
             f"Saved DataFrame to {filepath}",

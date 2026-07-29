@@ -30,6 +30,7 @@ def _http_error_response(status_code):
     response.status_code = status_code
     response.reason = "error"
     response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=response)
+    response.__enter__.return_value = response
     return response
 
 

@@ -29,6 +29,8 @@ dependencies = [
     "tenacity>=9.0.0",
     "simpleeval>=1.0.3",
     "numexpr>=2.14.1",
+    "duckdb>=1.0.0",
+    "polars>=1.0.0",
 ]
 
 # Optional dependencies for different features

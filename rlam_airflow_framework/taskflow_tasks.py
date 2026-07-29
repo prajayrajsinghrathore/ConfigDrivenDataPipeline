@@ -306,19 +306,69 @@ def ingest_data(config: Dict[str, Any]) -> str:
 
     try:
         fetcher = get_data_fetcher(source_type)
-        df = fetcher.fetch(data_source_config, correlation_id=ctx.correlation_id)
+        fetch_task_id = f"fetch_{partition.value}" if partition.enabled else "fetch"
+        target_path = storage.get_path(task_id=fetch_task_id, run_id=ctx.run_id)
 
-        # Post-fetch incremental filtering
-        df = wm.filter_dataframe(df)
+        fetch_result = fetcher.fetch(
+            data_source_config, correlation_id=ctx.correlation_id, target_path=target_path
+        )
 
-        if df.empty:
-            log.warning("No data fetched from source", source_name=source_name)
+        row_count = 0
+        if isinstance(fetch_result, Path):
+            # Streaming fetcher (out-of-core Parquet)
+            output_path = str(fetch_result)
+            
+            # Post-fetch incremental filtering via DuckDB
+            if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
+                import duckdb
+                import tempfile
+                
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
+                os.close(temp_fd)
+                
+                col = wm.config.watermark_column
+                val = str(adjusted_watermark).replace("'", "''")
+                
+                # Filter into a temp file
+                duckdb.query(f"COPY (SELECT * FROM '{output_path}' WHERE \"{col}\" > '{val}') TO '{temp_path}' (FORMAT PARQUET)")
+                
+                # Overwrite original with filtered
+                os.replace(temp_path, output_path)
+                log.info("Applied watermark filter via DuckDB", watermark_column=col, watermark_value=val)
+            
+            # Get row count via DuckDB
+            import duckdb
+            try:
+                row_count = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()[0]
+            except Exception:
+                row_count = 0
+                
+            if row_count == 0:
+                log.warning("No data fetched from source (or all filtered out)", source_name=source_name)
+            else:
+                log.info("Data ingestion complete", correlation_id=ctx.correlation_id, rows=row_count)
+                
         else:
-            log.info(
-                "Data ingestion complete",
-                correlation_id=ctx.correlation_id,
-                rows=len(df),
-                columns=len(df.columns),
+            # Legacy fetcher (in-memory pd.DataFrame)
+            df = fetch_result
+            # Post-fetch incremental filtering
+            df = wm.filter_dataframe(df)
+
+            if df.empty:
+                log.warning("No data fetched from source", source_name=source_name)
+            else:
+                row_count = len(df)
+                log.info(
+                    "Data ingestion complete",
+                    correlation_id=ctx.correlation_id,
+                    rows=row_count,
+                    columns=len(df.columns),
+                )
+                
+            output_path = storage.save(
+                df,
+                task_id=fetch_task_id,
+                run_id=ctx.run_id,
             )
 
         # Publish success event
@@ -327,13 +377,13 @@ def ingest_data(config: Dict[str, Any]) -> str:
             task_id=ctx.task_id,
             event_type="ingestion_completed",
             status="success",
-            message=f"Ingested {len(df)} rows from {source_name}",
+            message=f"Ingested {row_count} rows from {source_name}",
             execution_date=datetime.now(timezone.utc),
             topic=topic,
-            metadata={"row_count": len(df), **partition.metadata},
+            metadata={"row_count": row_count, **(partition.metadata or {})},
         )
 
-        return storage.save(df, ctx.task_id, ctx.run_id)
+        return output_path
 
     except Exception as e:
         log.error(

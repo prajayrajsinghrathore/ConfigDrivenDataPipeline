@@ -11,8 +11,9 @@ abstraction, not on a specific transport.
 import os
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any
+from pathlib import Path
 import pandas as pd
-
 from rlam_airflow_framework.utils.retry_policy import TransientError
 
 # =============================================================================
@@ -47,8 +48,11 @@ class DataFetcher(ABC):
 
     @abstractmethod
     def fetch(
-        self, config: Dict[str, Any], correlation_id: Optional[str] = None
-    ) -> pd.DataFrame:
+        self, 
+        config: Dict[str, Any], 
+        correlation_id: Optional[str] = None,
+        target_path: Optional[Path] = None
+    ) -> Path | pd.DataFrame:
         """
         Fetch and parse data described by a ``data_source`` config dict.
 
@@ -56,8 +60,9 @@ class DataFetcher(ABC):
             config: The source-specific slice of pipeline config (e.g. the
                 ``data_source`` section) — shape depends on the concrete fetcher.
             correlation_id: Optional ID for distributed tracing.
+            target_path: Optional target path to stream data to.
 
         Returns:
-            pandas.DataFrame: Parsed data.
+            Path | pd.DataFrame: Path to the local file, or parsed DataFrame (legacy).
         """
         raise NotImplementedError

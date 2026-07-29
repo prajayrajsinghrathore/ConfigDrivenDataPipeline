@@ -9,8 +9,10 @@ import socket
 import time
 from io import BytesIO
 from typing import Optional, Dict, Any
+from pathlib import Path
 import paramiko
 import pandas as pd
+import duckdb
 import structlog
 
 # Task SDK Connection: resolves via the execution API on workers (airflow.models
@@ -103,8 +105,8 @@ class SftpFetcher(DataFetcher):
     """
 
     def fetch(
-        self, config: Dict[str, Any], correlation_id: Optional[str] = None
-    ) -> pd.DataFrame:
+        self, config: Dict[str, Any], correlation_id: Optional[str] = None, target_path: Optional[Path] = None
+    ) -> Path | pd.DataFrame:
         sftp_conn_id = config["connection_id"]
         remote_path = config["remote_path"]
         file_format = config.get("file_format", "csv")
@@ -209,20 +211,45 @@ class SftpFetcher(DataFetcher):
                     f"File not found: {remote_path}", source=sftp_conn_id
                 )
 
-            # Download file to memory
-            file_obj = BytesIO()
-            sftp.getfo(remote_path, file_obj)
-            file_obj.seek(0)
-
-            download_time = time.time() - start_time - connect_time
-            log.info(f"File downloaded in {download_time:.2f}s")
-
-            # Parse based on format
-            content = file_obj.getvalue().decode("utf-8")
-            df = parse_content(content, file_format, trace_id)
-
-            log.info(f"Successfully parsed {len(df)} rows from SFTP file")
-            return df
+            if target_path:
+                import tempfile
+                temp_fd, temp_raw_path = tempfile.mkstemp(suffix=f".{file_format}")
+                os.close(temp_fd)
+                try:
+                    sftp.get(remote_path, temp_raw_path)
+                    download_time = time.time() - start_time - connect_time
+                    log.info(f"File downloaded to disk in {download_time:.2f}s")
+                    
+                    if file_format in ("json", "csv"):
+                        read_func = "read_json_auto" if file_format == "json" else "read_csv_auto"
+                        duckdb.query(f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)")
+                        log.info("Converted streamed SFTP data to Parquet via DuckDB", trace_id=trace_id)
+                    else:
+                        with open(temp_raw_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        df = parse_content(content, file_format, trace_id)
+                        df.to_parquet(target_path, index=False, compression="snappy")
+                        log.info("Converted streamed SFTP data to Parquet via Pandas fallback", trace_id=trace_id)
+                        
+                    return target_path
+                finally:
+                    if os.path.exists(temp_raw_path):
+                        os.remove(temp_raw_path)
+            else:
+                # Download file to memory
+                file_obj = BytesIO()
+                sftp.getfo(remote_path, file_obj)
+                file_obj.seek(0)
+    
+                download_time = time.time() - start_time - connect_time
+                log.info(f"File downloaded in {download_time:.2f}s")
+    
+                # Parse based on format
+                content = file_obj.getvalue().decode("utf-8")
+                df = parse_content(content, file_format, trace_id)
+    
+                log.info(f"Successfully parsed {len(df)} rows from SFTP file")
+                return df
 
         except paramiko.AuthenticationException as e:
             log.error(f"SFTP authentication failed: {e}")
