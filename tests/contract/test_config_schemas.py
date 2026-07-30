@@ -374,9 +374,7 @@ class TestAirflow330SchemaValidation:
     def test_deadline_timeout_minutes_is_positive(self, airflow_330_config):
         """Test timeout_minutes is a positive integer."""
         tiers = (
-            airflow_330_config.get("schedule", {})
-            .get("deadline", {})
-            .get("tiers", [])
+            airflow_330_config.get("schedule", {}).get("deadline", {}).get("tiers", [])
         )
 
         for tier in tiers:
@@ -389,9 +387,7 @@ class TestAirflow330SchemaValidation:
     def test_deadline_email_recipients_is_array(self, airflow_330_config):
         """Test email_recipients is an array of strings."""
         tiers = (
-            airflow_330_config.get("schedule", {})
-            .get("deadline", {})
-            .get("tiers", [])
+            airflow_330_config.get("schedule", {}).get("deadline", {}).get("tiers", [])
         )
 
         for tier in tiers:
@@ -559,11 +555,11 @@ class TestNoUnknownTopLevelKeys:
     """Reject unknown top-level keys in every pipeline config.
 
     Guards against dead configuration: the factory only reads the keys listed
-    below, so anything else (a typo like `deadine:`, or legacy-layout leftovers
+    below, so anything else (a typo like `deadine:`, or outdated layout leftovers
     such as top-level `retries:`/`data_quality_checks:`) validates silently and
     does NOTHING. This class of bug shipped twice before this test existed
     (financial_operations_v2's top-level hitl/deadline/retry; joke_api_test's
-    entire legacy DQ/transformation config). Extend ALLOWED_TOP_LEVEL_KEYS only
+    entire outdated DQ/transformation config). Extend ALLOWED_TOP_LEVEL_KEYS only
     when the factory actually starts reading a new key.
     """
 
@@ -594,7 +590,9 @@ class TestNoUnknownTopLevelKeys:
                 config = yaml.safe_load(f)
             unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
             if unknown:
-                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+                problems.append(
+                    f"{config_file.name}: unknown top-level keys {sorted(unknown)}"
+                )
         assert not problems, (
             "Unknown top-level keys are dead configuration (the factory never reads them):\n"
             + "\n".join(problems)
@@ -611,5 +609,7 @@ class TestNoUnknownTopLevelKeys:
                 continue
             unknown = set(config.keys()) - self.ALLOWED_TOP_LEVEL_KEYS
             if unknown:
-                problems.append(f"{config_file.name}: unknown top-level keys {sorted(unknown)}")
+                problems.append(
+                    f"{config_file.name}: unknown top-level keys {sorted(unknown)}"
+                )
         assert not problems, "\n".join(problems)

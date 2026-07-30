@@ -167,23 +167,12 @@ transformation:
     days_to_maturity: "date_diff(maturity_date, today(), 'days')"
 ```
 
-## Legacy Formula Support
-
-The engine automatically converts legacy pandas-style formulas:
-
-| Legacy Syntax | New Syntax |
-|--------------|------------|
-| `field.str.upper()` | `upper(field)` |
-| `field.str.lower()` | `lower(field)` |
-| `pd.Timestamp.now()` | `now()` |
-| `field.dt.year` | `year(field)` |
-| `np.where(c, t, f)` | `if_else(c, t, f)` |
 
 ---
 
-# 3. Data Quality with Soda Core
+# 3. Data Quality with Soda Core (Soda 4)
 
-The framework integrates **Soda Core** for enterprise-grade data quality validation. DQ checks run as a separate Airflow task between transformation and loading.
+The framework integrates **Soda Core (Soda 4)** for enterprise-grade data quality validation. DQ checks run as a separate Airflow task between transformation and loading.
 
 ## Configuration Structure
 
@@ -297,9 +286,10 @@ transformation:
 ```python
 # File: dags/transforms/order_enrichment.py
 
-import pandas as pd
+import polars as pl
+from datetime import datetime
 
-def apply_business_rules(df: pd.DataFrame, region: str = 'DEFAULT', apply_discounts: bool = False) -> pd.DataFrame:
+def apply_business_rules(df: pl.DataFrame, region: str = 'DEFAULT', apply_discounts: bool = False) -> pl.DataFrame:
     """
     Apply custom business rules to order data.
     
@@ -312,26 +302,27 @@ def apply_business_rules(df: pd.DataFrame, region: str = 'DEFAULT', apply_discou
         Transformed DataFrame
     """
     # Filter by region
-    df = df[df['region'] == region].copy()
+    df = df.filter(pl.col('region') == region)
     
-    # Apply complex discount logic
+    # Apply complex discount logic using performant expressions
     if apply_discounts:
-        df['discount_rate'] = df.apply(calculate_discount, axis=1)
-        df['final_price'] = df['price'] * (1 - df['discount_rate'])
+        df = df.with_columns(
+            pl.when((pl.col('customer_tier') == 'PLATINUM') & (pl.col('amount') > 100000))
+            .then(0.15)
+            .when(pl.col('customer_tier') == 'GOLD')
+            .then(0.10)
+            .otherwise(0.05)
+            .alias('discount_rate')
+        ).with_columns(
+            (pl.col('price') * (1 - pl.col('discount_rate'))).alias('final_price')
+        )
     
     # Add derived fields
-    df['processing_timestamp'] = pd.Timestamp.now()
+    df = df.with_columns(
+        pl.lit(datetime.now()).alias('processing_timestamp')
+    )
     
     return df
-
-def calculate_discount(row):
-    """Complex discount calculation based on multiple factors."""
-    if row['customer_tier'] == 'PLATINUM' and row['amount'] > 100000:
-        return 0.15
-    elif row['customer_tier'] == 'GOLD':
-        return 0.10
-    else:
-        return 0.05
 ```
 
 ---

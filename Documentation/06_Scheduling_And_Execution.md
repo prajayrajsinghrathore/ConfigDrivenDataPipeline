@@ -366,7 +366,7 @@ flowchart LR
 
 **Key Concepts:**
 - **Logical Date (ds)**: The date the DAG is scheduled for (data date)
-- **Execution Date**: Same as logical date (legacy term)
+- **Execution Date**: Same as logical date (older Airflow terminology)
 - **Run Date**: When the DAG actually runs
 
 **Example:**

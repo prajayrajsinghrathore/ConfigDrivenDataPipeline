@@ -13,7 +13,7 @@ depends on Airflow which doesn't run natively on Windows.
 """
 
 import pytest
-import pandas as pd
+import polars as pl
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, cast
 
@@ -52,13 +52,13 @@ class DataQualityValidator:
     """
 
     def check_not_null(
-        self, df: pd.DataFrame, column: str, threshold: float = 0.0
+        self, df: pl.DataFrame, column: str, threshold: float = 0.0
     ) -> DataQualityResult:
         """Check for null values in a column."""
         if column not in df.columns:
             raise KeyError(f"Column '{column}' not found")
 
-        null_count = df[column].isna().sum()
+        null_count = df[column].null_count()
         total = len(df)
         null_rate = null_count / total if total > 0 else 0
 
@@ -70,7 +70,7 @@ class DataQualityValidator:
             details={"null_rate": null_rate},
         )
 
-    def check_unique(self, df: pd.DataFrame, columns) -> DataQualityResult:
+    def check_unique(self, df: pl.DataFrame, columns) -> DataQualityResult:
         """Check for unique values in column(s)."""
         if isinstance(columns, str):
             columns = [columns]
@@ -79,7 +79,7 @@ class DataQualityValidator:
             if col not in df.columns:
                 raise KeyError(f"Column '{col}' not found")
 
-        duplicates = df.duplicated(subset=columns, keep=False)
+        duplicates = df.select(columns).is_duplicated()
         dup_count = duplicates.sum()
 
         return DataQualityResult(
@@ -90,7 +90,7 @@ class DataQualityValidator:
             details={"duplicate_count": dup_count},
         )
 
-    def check_positive(self, df: pd.DataFrame, column: str) -> DataQualityResult:
+    def check_positive(self, df: pl.DataFrame, column: str) -> DataQualityResult:
         """Check that all values are positive."""
         if column not in df.columns:
             raise KeyError(f"Column '{column}' not found")
@@ -103,12 +103,14 @@ class DataQualityValidator:
             passed=negative_count == 0,
             total_count=len(df),
             failed_count=cast(int, negative_count),
-            details={"negative_values": df.loc[negative_mask, column].tolist()[:10]},
+            details={
+                "negative_values": df.filter(pl.col(column) < 0)[column].to_list()[:10]
+            },
         )
 
     def check_range(
         self,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         column: str,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
@@ -117,7 +119,7 @@ class DataQualityValidator:
         if column not in df.columns:
             raise KeyError(f"Column '{column}' not found")
 
-        out_of_range = pd.Series([False] * len(df))
+        out_of_range = pl.Series([False] * len(df))
 
         if min_value is not None:
             out_of_range |= df[column] < min_value
@@ -135,13 +137,13 @@ class DataQualityValidator:
         )
 
     def check_pattern(
-        self, df: pd.DataFrame, column: str, pattern: str
+        self, df: pl.DataFrame, column: str, pattern: str
     ) -> DataQualityResult:
         """Check that values match a regex pattern."""
         if column not in df.columns:
             raise KeyError(f"Column '{column}' not found")
 
-        matches = df[column].astype(str).str.match(pattern, na=False)
+        matches = df[column].cast(pl.String).str.contains(pattern).fill_null(False)
         failed_count = (~matches).sum()
 
         return DataQualityResult(
@@ -153,7 +155,7 @@ class DataQualityValidator:
         )
 
     def check_type(
-        self, df: pd.DataFrame, column: str, expected_type: str
+        self, df: pl.DataFrame, column: str, expected_type: str
     ) -> DataQualityResult:
         """Check column data type."""
         if column not in df.columns:
@@ -161,16 +163,19 @@ class DataQualityValidator:
 
         dtype = df[column].dtype
         dtype_str = str(dtype).lower()
-        
-        # Type check logic that handles modern Pandas types
+
+        # Type check logic that handles modern Polars types
         if expected_type == "numeric":
-            passed = pd.api.types.is_numeric_dtype(dtype)
+            passed = dtype in (pl.Int64, pl.Float64, pl.Int32, pl.Float32)
         elif expected_type == "string":
-            passed = (dtype is object or 
-                     dtype_str == "string" or 
-                     pd.api.types.is_string_dtype(dtype))
+            passed = (
+                dtype is object
+                or dtype_str == "string"
+                or dtype == pl.Utf8
+                or dtype == pl.String
+            )
         elif expected_type == "datetime":
-            passed = pd.api.types.is_datetime64_any_dtype(dtype)
+            passed = dtype == pl.Datetime
         else:
             passed = False
 
@@ -183,14 +188,14 @@ class DataQualityValidator:
         )
 
     def check_completeness(
-        self, df: pd.DataFrame, column: str, min_completeness: float = 1.0
+        self, df: pl.DataFrame, column: str, min_completeness: float = 1.0
     ) -> DataQualityResult:
         """Check column completeness (non-null percentage)."""
         if column not in df.columns:
             raise KeyError(f"Column '{column}' not found")
 
         total = len(df)
-        non_null = df[column].notna().sum()
+        non_null = total - df[column].null_count()
         completeness = non_null / total if total > 0 else 0
 
         return DataQualityResult(
@@ -202,7 +207,7 @@ class DataQualityValidator:
         )
 
     def run_checks(
-        self, df: pd.DataFrame, checks: List[Dict[str, Any]]
+        self, df: pl.DataFrame, checks: List[Dict[str, Any]]
     ) -> List[DataQualityResult]:
         """Run multiple checks from configuration."""
         results = []
@@ -267,7 +272,7 @@ class TestDataQualityNullChecks:
 
     @pytest.fixture
     def df_with_nulls(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [1, 2, None, 4, 5],
                 "name": ["Alice", None, "Charlie", None, "Eve"],
@@ -277,7 +282,7 @@ class TestDataQualityNullChecks:
 
     @pytest.fixture
     def df_no_nulls(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [1, 2, 3, 4, 5],
                 "name": ["Alice", "Bob", "Charlie", "David", "Eve"],
@@ -325,7 +330,7 @@ class TestDataQualityUniquenessChecks:
 
     @pytest.fixture
     def df_with_duplicates(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [1, 2, 2, 4, 5],  # Duplicate id
                 "email": [
@@ -340,7 +345,7 @@ class TestDataQualityUniquenessChecks:
 
     @pytest.fixture
     def df_unique(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [1, 2, 3, 4, 5],
                 "email": [
@@ -366,7 +371,7 @@ class TestDataQualityUniquenessChecks:
 
     def test_multiple_column_uniqueness(self, validator):
         """Test uniqueness across multiple columns."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "first_name": ["John", "John", "Jane"],
                 "last_name": ["Doe", "Smith", "Doe"],
@@ -386,7 +391,7 @@ class TestDataQualityRangeChecks:
 
     @pytest.fixture
     def df_numeric(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "age": [25, 30, -5, 150, 35],  # -5 and 150 are invalid
                 "score": [85, 102, 78, 92, 65],  # 102 is invalid (>100)
@@ -417,7 +422,7 @@ class TestDataQualityRangeChecks:
 
     def test_pass_when_in_range(self, validator):
         """Test pass when all values are in range."""
-        df = pd.DataFrame({"value": [10, 20, 30, 40, 50]})
+        df = pl.DataFrame({"value": [10, 20, 30, 40, 50]})
         result = validator.check_range(df, "value", min_value=0, max_value=100)
         assert result.passed
 
@@ -432,7 +437,7 @@ class TestDataQualityPatternChecks:
 
     @pytest.fixture
     def df_patterns(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "email": [
                     "alice@test.com",
@@ -466,7 +471,7 @@ class TestDataQualityPatternChecks:
 
     def test_pass_when_all_match(self, validator):
         """Test pass when all values match pattern."""
-        df = pd.DataFrame({"code": ["ABC-001", "DEF-002", "GHI-003"]})
+        df = pl.DataFrame({"code": ["ABC-001", "DEF-002", "GHI-003"]})
         result = validator.check_pattern(df, "code", r"^[A-Z]{3}-\d{3}$")
         assert result.passed
 
@@ -481,19 +486,25 @@ class TestDataQualityTypeChecks:
 
     def test_check_numeric_type(self, validator):
         """Test numeric type check."""
-        df = pd.DataFrame({"value": [1, 2, 3, 4, 5]})
+        df = pl.DataFrame({"value": [1, 2, 3, 4, 5]})
         result = validator.check_type(df, "value", "numeric")
         assert result.passed
 
     def test_check_string_type(self, validator):
         """Test string type check."""
-        df = pd.DataFrame({"name": ["Alice", "Bob", "Charlie"]})
+        df = pl.DataFrame({"name": ["Alice", "Bob", "Charlie"]})
         result = validator.check_type(df, "name", "string")
         assert result.passed
 
     def test_check_datetime_type(self, validator):
         """Test datetime type check."""
-        df = pd.DataFrame({"date": pd.date_range("2026-01-01", periods=3)})
+        df = pl.DataFrame(
+            {
+                "date": pl.Series(
+                    ["2026-01-01", "2026-01-02", "2026-01-03"]
+                ).str.to_datetime()
+            }
+        )
         result = validator.check_type(df, "date", "datetime")
         assert result.passed
 
@@ -508,7 +519,7 @@ class TestDataQualityCompletenessChecks:
 
     def test_completeness_percentage(self, validator):
         """Test completeness percentage calculation."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "col": [1, 2, None, 4, None, 6, 7, None, 9, 10]  # 70% complete
             }
@@ -518,7 +529,7 @@ class TestDataQualityCompletenessChecks:
 
     def test_completeness_pass(self, validator):
         """Test completeness passes threshold."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "col": [1, 2, 3, 4, None]  # 80% complete
             }
@@ -568,7 +579,7 @@ class TestDataQualityBatchExecution:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [1, 2, 3, None, 5],
                 "price": [10.0, -5.0, 20.0, 15.0, 25.0],

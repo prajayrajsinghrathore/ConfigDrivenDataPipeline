@@ -1,3 +1,11 @@
+"""
+    Loads and validates data source configurations using external schema files.
+
+    Features:
+    - Proper handling of None results from yaml.safe_load
+    - File hash tracking for change detection
+    - Comprehensive validation with clear error messages
+    """
 import os
 from datetime import datetime
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
@@ -20,14 +28,7 @@ logger = structlog.get_logger(__name__)
 
 
 class ConfigLoader:
-    """
-    Loads and validates data source configurations using external schema files.
-
-    Features:
-    - Proper handling of None results from yaml.safe_load
-    - File hash tracking for change detection
-    - Comprehensive validation with clear error messages
-    """
+    
 
     def __init__(self, config_dir: str = "/opt/airflow/config"):
         """

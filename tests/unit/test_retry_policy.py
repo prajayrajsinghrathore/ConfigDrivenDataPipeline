@@ -11,7 +11,10 @@ test_data_fetchers.py and test_destination_loaders.py.
 """
 
 from rlam_airflow_framework.utils.retry_policy import TransientError
-from rlam_airflow_framework.data_fetchers.base import DataFetchError, TransientDataFetchError
+from rlam_airflow_framework.data_fetchers.base import (
+    DataFetchError,
+    TransientDataFetchError,
+)
 from rlam_airflow_framework.destinations.primitives import (
     DataLoadError,
     ObjectStorageError,

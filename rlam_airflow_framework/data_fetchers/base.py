@@ -20,9 +20,17 @@ from rlam_airflow_framework.utils.retry_policy import TransientError
 # Environment variables take precedence, then fall back to defaults.
 # These align with config/global_settings.yaml timeouts.http section.
 
-DEFAULT_TIMEOUT = int(os.getenv("TIMEOUT_HTTP_REQUEST", os.getenv("DATA_FETCHER_TIMEOUT", "30")))
-DEFAULT_MAX_RETRIES = int(os.getenv("TIMEOUT_HTTP_MAX_RETRIES", os.getenv("DATA_FETCHER_MAX_RETRIES", "3")))
-DEFAULT_RETRY_BACKOFF = float(os.getenv("TIMEOUT_HTTP_RETRY_BACKOFF", os.getenv("DATA_FETCHER_RETRY_BACKOFF", "1.0")))
+DEFAULT_TIMEOUT = int(
+    os.getenv("TIMEOUT_HTTP_REQUEST", os.getenv("DATA_FETCHER_TIMEOUT", "30"))
+)
+DEFAULT_MAX_RETRIES = int(
+    os.getenv("TIMEOUT_HTTP_MAX_RETRIES", os.getenv("DATA_FETCHER_MAX_RETRIES", "3"))
+)
+DEFAULT_RETRY_BACKOFF = float(
+    os.getenv(
+        "TIMEOUT_HTTP_RETRY_BACKOFF", os.getenv("DATA_FETCHER_RETRY_BACKOFF", "1.0")
+    )
+)
 
 
 class DataFetchError(Exception):
@@ -41,15 +49,28 @@ class TransientDataFetchError(DataFetchError, TransientError):
     timeout, connection reset, 5xx/429 response, ...)."""
 
 
+FETCHER_REGISTRY = {}
+
+
 class DataFetcher(ABC):
-    """Strategy interface for pulling a DataFrame out of a configured source."""
+    """Strategy interface for pulling data out of a configured source and staging it to disk."""
+
+    @classmethod
+    def register(cls, source_type: str):
+        """Decorator to register a fetcher for a specific source_type."""
+
+        def decorator(subclass):
+            FETCHER_REGISTRY[source_type] = subclass
+            return subclass
+
+        return decorator
 
     @abstractmethod
     def fetch(
-        self, 
-        config: Dict[str, Any], 
+        self,
+        config: Dict[str, Any],
         correlation_id: Optional[str] = None,
-        target_path: Optional[Path] = None
+        target_path: Optional[Path] = None,
     ) -> Path:
         """
         Fetch and parse data described by a ``data_source`` config dict.
@@ -61,6 +82,6 @@ class DataFetcher(ABC):
             target_path: Optional target path to stream data to.
 
         Returns:
-            Path | pd.DataFrame: Path to the local file, or parsed DataFrame (legacy).
+            Path: Path to the local Parquet file containing the fetched data.
         """
         raise NotImplementedError

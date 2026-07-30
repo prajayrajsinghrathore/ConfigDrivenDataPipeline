@@ -24,7 +24,7 @@ class DataBackend(StrEnum):
 class DuckDBData:
     value: duckdb.DuckDBPyRelation
     scratch: Any = field(default=None, compare=False, repr=False)
-    
+
     @property
     def backend(self) -> DataBackend:
         return DataBackend.DUCKDB
@@ -33,7 +33,7 @@ class DuckDBData:
 @dataclass(frozen=True)
 class PolarsLazyData:
     value: pl.LazyFrame
-    
+
     @property
     def backend(self) -> DataBackend:
         return DataBackend.POLARS_LAZY
@@ -42,7 +42,7 @@ class PolarsLazyData:
 @dataclass(frozen=True)
 class PolarsEagerData:
     value: pl.DataFrame
-    
+
     @property
     def backend(self) -> DataBackend:
         return DataBackend.POLARS_EAGER
@@ -51,15 +51,10 @@ class PolarsEagerData:
 @dataclass(frozen=True)
 class ArrowData:
     value: Union[pa.Table, pa.RecordBatchReader]
-    
+
     @property
     def backend(self) -> DataBackend:
         return DataBackend.ARROW
 
 
-ExecutionData: TypeAlias = (
-    DuckDBData
-    | PolarsLazyData
-    | PolarsEagerData
-    | ArrowData
-)
+ExecutionData: TypeAlias = DuckDBData | PolarsLazyData | PolarsEagerData | ArrowData

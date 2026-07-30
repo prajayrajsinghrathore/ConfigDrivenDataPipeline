@@ -14,25 +14,29 @@ from rlam_airflow_framework.engine.context import ExecutionContext
 
 class DuckDBTypeCastStep(TransformationStep[TypeCastStepConfig]):
     config_type = TypeCastStepConfig
-    
+
     @property
     def accepted_backends(self) -> frozenset[DataBackend]:
         return frozenset([DataBackend.DUCKDB])
-        
-    def output_backend(self, input_backend: DataBackend, config: TypeCastStepConfig) -> DataBackend:
+
+    def output_backend(
+        self, input_backend: DataBackend, config: TypeCastStepConfig
+    ) -> DataBackend:
         return DataBackend.DUCKDB
-        
-    def transform(self, data: ExecutionData, config: TypeCastStepConfig, context: ExecutionContext) -> ExecutionData:
+
+    def transform(
+        self, data: ExecutionData, config: TypeCastStepConfig, context: ExecutionContext
+    ) -> ExecutionData:
         rel = cast(duckdb.DuckDBPyRelation, data.value)
-        
+
         # DuckDB type mapping
         type_mapping = {
             "datetime": "TIMESTAMP",
             "float": "DOUBLE",
             "int": "BIGINT",
-            "string": "VARCHAR"
+            "string": "VARCHAR",
         }
-        
+
         select_exprs = []
         for col in rel.columns:
             if col in config.columns:
@@ -43,6 +47,6 @@ class DuckDBTypeCastStep(TransformationStep[TypeCastStepConfig]):
                 select_exprs.append(f"CAST({col} AS {duck_type}) AS {col}")
             else:
                 select_exprs.append(col)
-                
+
         new_rel = rel.project(", ".join(select_exprs))
         return DuckDBData(new_rel)

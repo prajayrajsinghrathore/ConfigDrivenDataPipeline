@@ -1,3 +1,4 @@
+"""Compute MD5 hash of a file for change detection."""
 import yaml
 import os
 import hashlib
@@ -9,7 +10,7 @@ logger = structlog.get_logger(__name__)
 
 
 def compute_file_hash(filepath: str) -> str:
-    """Compute MD5 hash of a file for change detection."""
+    
     try:
         with open(filepath, "rb") as f:
             return hashlib.md5(f.read()).hexdigest()

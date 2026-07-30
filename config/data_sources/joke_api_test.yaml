@@ -1,5 +1,4 @@
 # Joke API test for local development (smoke pipeline for e2e runs)
-# 2026-07-23: migrated off the legacy top-level layout — the old top-level
 # name/source_type/retries/transformations/data_quality_checks keys were never
 # read by the factory (dead config). Add a `validation:` block if DQ is wanted.
 metadata:

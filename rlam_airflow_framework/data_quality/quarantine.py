@@ -5,9 +5,7 @@ Quarantine lifecycle management for invalid records, with HITL approval
 manages what happens to records once they've already been flagged invalid.
 """
 
-import pandas as pd
 import json
-import uuid
 from typing import Dict, Any, List, Tuple
 from datetime import datetime, timezone
 import structlog
@@ -38,7 +36,7 @@ class QuarantineHandler:
         self.quarantine_config = self.destination_config.get("quarantine", {})
 
         # Every pipeline belongs to a tenant (enforced at DAG-parse time by
-        # DAGFactoryV2._validate_destination_connections/create_dag_from_config),
+        # DAGFactoryV2._validate_pipeline_connections/create_dag_from_config),
         # so this is always populated for a real pipeline config.
         self.tenant_id = config.get("metadata", {}).get("tenant", "unknown")
 
@@ -55,53 +53,74 @@ class QuarantineHandler:
 
     def prepare_quarantine_records(
         self,
-        invalid_df: pd.DataFrame,
+        invalid_df_path: str,
+        output_path: str,
         source_pipeline: str,
         source_table: str,
         failed_checks: List[str],
-    ) -> pd.DataFrame:
+    ) -> int:
         """
-        Prepare invalid records for quarantine with metadata.
+        Prepare invalid records for quarantine with metadata using DuckDB.
 
         Args:
-            invalid_df: DataFrame with invalid records
+            invalid_df_path: Path to Parquet file with invalid records
+            output_path: Path to write quarantine records
             source_pipeline: Name of the source pipeline/DAG
             source_table: Original destination table name
             failed_checks: List of failed check names
 
         Returns:
-            DataFrame formatted for quarantine table
+            Number of rows written
         """
-        if invalid_df.empty:
-            return pd.DataFrame()
+        import duckdb
 
-        quarantine_records = []
+        fc_json = json.dumps(failed_checks).replace("'", "''")
+        tenant = self.tenant_id.replace("'", "''")
+        src_pipe = source_pipeline.replace("'", "''")
+        src_tbl = source_table.replace("'", "''")
+        now_iso = datetime.now(timezone.utc).isoformat()
 
-        for _, row in invalid_df.iterrows():
-            record = {
-                "quarantine_id": str(uuid.uuid4()),
-                "tenant_id": self.tenant_id,
-                "source_pipeline": source_pipeline,
-                "source_table": source_table,
-                "failed_checks": json.dumps(failed_checks),
-                "record_data": json.dumps(row.to_dict(), default=str),
-                "quarantined_at": datetime.now(timezone.utc).isoformat(),
-                "reprocessed": False,
-                "reprocessed_at": None,
-                "approval_status": "pending" if self.hitl_enabled else "auto_approved",
-                "approved_by": None,
-                "approved_at": None,
-            }
-            quarantine_records.append(record)
+        try:
+            count_res = duckdb.execute(
+                f"SELECT count(*) FROM read_parquet('{invalid_df_path}')"
+            ).fetchone()
+            count = count_res[0] if count_res else 0
+        except Exception:
+            count = 0
+
+        if count == 0:
+            return 0
+
+        status = "pending" if self.hitl_enabled else "auto_approved"
+
+        query = f"""
+        COPY (
+            SELECT 
+                uuid() AS quarantine_id,
+                '{tenant}' AS tenant_id,
+                '{src_pipe}' AS source_pipeline,
+                '{src_tbl}' AS source_table,
+                '{fc_json}' AS failed_checks,
+                to_json(t) AS record_data,
+                '{now_iso}' AS quarantined_at,
+                false AS reprocessed,
+                NULL AS reprocessed_at,
+                '{status}' AS approval_status,
+                NULL AS approved_by,
+                NULL AS approved_at
+            FROM read_parquet('{invalid_df_path}') as t
+        ) TO '{output_path}' (FORMAT PARQUET)
+        """
+        duckdb.execute(query)
 
         log.info(
             "Prepared quarantine records",
-            count=len(quarantine_records),
+            count=count,
             source_pipeline=source_pipeline,
             hitl_enabled=self.hitl_enabled,
         )
 
-        return pd.DataFrame(quarantine_records)
+        return count
 
     def get_quarantine_destination(self) -> Dict[str, Any]:
         """
@@ -128,10 +147,10 @@ class QuarantineHandler:
 
 
 def create_hitl_quarantine_approval_task(
-    dag_id: str, quarantine_records: pd.DataFrame, config: Dict[str, Any]
+    dag_id: str, quarantine_df_path: str, config: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Create context for HITL quarantine approval task.
+    Create context for HITL quarantine approval task using DuckDB out-of-core.
 
     This function prepares the data needed for an Airflow 3.1.x @task.hitl()
     decorated task that will pause execution until a data-steward approves
@@ -139,7 +158,7 @@ def create_hitl_quarantine_approval_task(
 
     Args:
         dag_id: The DAG identifier
-        quarantine_records: DataFrame of quarantined records
+        quarantine_df_path: Path to DataFrame of quarantined records
         config: Pipeline configuration
 
     Returns:
@@ -148,35 +167,63 @@ def create_hitl_quarantine_approval_task(
         - approval_form_fields: Fields for the approval UI form
         - timeout_hours: How long to wait for approval
     """
+    import duckdb
+
     quarantine_config = config.get("destination", {}).get("quarantine", {})
     hitl_config = quarantine_config.get("hitl", {})
 
     # Build summary for approval UI
     tenant_id = config.get("metadata", {}).get("tenant", "unknown")
+
+    try:
+        count_res = duckdb.execute(
+            f"SELECT count(*) FROM read_parquet('{quarantine_df_path}')"
+        ).fetchone()
+        total_records = count_res[0] if count_res else 0
+    except Exception:
+        total_records = 0
+
     summary = {
         "dag_id": dag_id,
         "tenant_id": tenant_id,
-        "total_records": len(quarantine_records),
+        "total_records": total_records,
         "quarantine_time": datetime.now(timezone.utc).isoformat(),
         "failed_checks": [],
         "sample_records": [],
     }
 
-    # Extract unique failed checks
-    if "failed_checks" in quarantine_records.columns:
-        all_checks = set()
-        for checks_json in quarantine_records["failed_checks"].dropna():
-            try:
-                checks = json.loads(checks_json)
-                all_checks.update(checks if isinstance(checks, list) else [checks])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        summary["failed_checks"] = list(all_checks)
+    if total_records > 0:
+        # Extract unique failed checks
+        try:
+            fc_rows = duckdb.execute(
+                f"SELECT DISTINCT failed_checks FROM read_parquet('{quarantine_df_path}') WHERE failed_checks IS NOT NULL"
+            ).fetchall()
+            all_checks = set()
+            for row in fc_rows:
+                if row[0]:
+                    try:
+                        checks = json.loads(row[0])
+                        all_checks.update(
+                            checks if isinstance(checks, list) else [checks]
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            summary["failed_checks"] = list(all_checks)
+        except Exception:
+            pass
 
-    # Include sample records (first 5) for review
-    if len(quarantine_records) > 0:
-        sample = quarantine_records.head(5)
-        summary["sample_records"] = sample.to_dict("records")
+        # Include sample records (first 5) for review
+        try:
+            res = duckdb.execute(
+                f"SELECT * FROM read_parquet('{quarantine_df_path}') LIMIT 5"
+            )
+            cols = [desc[0] for desc in res.description]
+            sample_rows = []
+            for row in res.fetchall():
+                sample_rows.append(dict(zip(cols, row)))
+            summary["sample_records"] = sample_rows
+        except Exception:
+            pass
 
     return {
         "quarantine_summary": summary,
@@ -196,57 +243,78 @@ def create_hitl_quarantine_approval_task(
 
 def process_hitl_approval_result(
     approval_result: Dict[str, Any],
-    quarantine_records: pd.DataFrame,
+    quarantine_df_path: str,
+    output_path: str,
     config: Dict[str, Any],
-) -> Tuple[pd.DataFrame, str]:
+) -> Tuple[int, str]:
     """
-    Process the result of a HITL quarantine approval.
+    Process the result of a HITL quarantine approval out-of-core.
 
     Args:
         approval_result: Result from HITL task containing:
             - action: 'approve_release', 'reject_release', or 'reprocess'
             - notes: Optional notes from approver
             - approved_by: Username of approver
-        quarantine_records: The quarantined records DataFrame
+        quarantine_df_path: Path to the quarantined records DataFrame
+        output_path: Path to write the updated records
         config: Pipeline configuration
 
     Returns:
-        Tuple of (processed_records, action_taken)
+        Tuple of (processed_records_count, action_taken)
     """
+    import duckdb
+
     action = approval_result.get("action", "reject_release")
-    approved_by = approval_result.get("approved_by", "unknown")
-    notes = approval_result.get("notes", "")
+    approved_by = approval_result.get("approved_by", "unknown").replace("'", "''")
+    notes = approval_result.get("notes", "").replace("'", "''")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    try:
+        count_res = duckdb.execute(
+            f"SELECT count(*) FROM read_parquet('{quarantine_df_path}')"
+        ).fetchone()
+        record_count = count_res[0] if count_res else 0
+    except Exception:
+        record_count = 0
 
     log.info(
         "Processing HITL approval result",
         action=action,
         approved_by=approved_by,
-        record_count=len(quarantine_records),
+        record_count=record_count,
     )
 
-    # Update records based on approval decision
-    quarantine_records = quarantine_records.copy()
-    quarantine_records["approved_by"] = approved_by
-    quarantine_records["approved_at"] = datetime.now(timezone.utc).isoformat()
-    quarantine_records["approval_notes"] = notes
-
     if action == "approve_release":
-        quarantine_records["approval_status"] = "approved"
-        quarantine_records["reprocessed"] = True
-        quarantine_records["reprocessed_at"] = datetime.now(timezone.utc).isoformat()
-        log.info(
-            "Quarantine records approved for release", count=len(quarantine_records)
-        )
-
+        app_status = "approved"
+        rep = "true"
+        rep_at = f"'{now_iso}'"
+        log.info("Quarantine records approved for release", count=record_count)
     elif action == "reject_release":
-        quarantine_records["approval_status"] = "rejected"
-        log.info("Quarantine release rejected", count=len(quarantine_records))
+        app_status = "rejected"
+        rep = "reprocessed"
+        rep_at = "reprocessed_at"
+        log.info("Quarantine release rejected", count=record_count)
+    else:
+        app_status = "pending_reprocess"
+        rep = "reprocessed"
+        rep_at = "reprocessed_at"
+        log.info("Quarantine records marked for reprocessing", count=record_count)
 
-    elif action == "reprocess":
-        quarantine_records["approval_status"] = "pending_reprocess"
-        log.info(
-            "Quarantine records marked for reprocessing", count=len(quarantine_records)
-        )
+    query = f"""
+    COPY (
+        SELECT 
+            * REPLACE (
+                '{app_status}' AS approval_status, 
+                '{approved_by}' AS approved_by, 
+                '{now_iso}' AS approved_at, 
+                {rep} AS reprocessed, 
+                {rep_at} AS reprocessed_at,
+                '{notes}' AS approval_notes
+            )
+        FROM read_parquet('{quarantine_df_path}')
+    ) TO '{output_path}' (FORMAT PARQUET)
+    """
+    duckdb.execute(query)
 
     # Publish event to Kafka
     try:
@@ -261,11 +329,11 @@ def process_hitl_approval_result(
             metadata={
                 "action": action,
                 "approved_by": approved_by,
-                "record_count": len(quarantine_records),
+                "record_count": record_count,
                 "notes": notes,
             },
         )
     except Exception as e:
         log.warning("Failed to publish HITL approval event to Kafka", error=str(e))
 
-    return quarantine_records, action
+    return record_count, action

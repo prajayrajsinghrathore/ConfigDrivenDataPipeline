@@ -1,3 +1,4 @@
+"""Validates configuration dictionaries against business rules."""
 import structlog
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
@@ -20,7 +21,7 @@ else:
 
 
 class ConfigValidator:
-    """Validates configuration dictionaries against business rules."""
+    
 
     def __init__(self, tenant_context: Optional["TenantContext"] = None):
         self.tenant_context = tenant_context

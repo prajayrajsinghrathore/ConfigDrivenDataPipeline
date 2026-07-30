@@ -12,7 +12,7 @@ of a formula engine without depending on external libraries like simpleeval.
 """
 
 import pytest
-import pandas as pd
+import polars as pl
 import math
 from typing import Dict, Any, Callable
 
@@ -328,7 +328,7 @@ class TestFormulaEngineErrorHandling:
 
 @pytest.mark.unit
 class TestFormulaEngineDataFrameIntegration:
-    """Test formula engine with pandas DataFrames."""
+    """Test formula engine with polars DataFrames."""
 
     @pytest.fixture
     def engine(self):
@@ -336,7 +336,7 @@ class TestFormulaEngineDataFrameIntegration:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "price": [10.0, 20.0, 30.0],
                 "quantity": [2, 3, 1],
@@ -348,9 +348,9 @@ class TestFormulaEngineDataFrameIntegration:
         """Test applying formula to each row of DataFrame."""
 
         def apply_formula(row):
-            return engine.evaluate("price * quantity * (1 - discount)", row.to_dict())
+            return engine.evaluate("price * quantity * (1 - discount)", row)
 
-        result = df.apply(apply_formula, axis=1)
+        result = [apply_formula(row) for row in df.iter_rows(named=True)]
         expected = [18.0, 48.0, 25.5]
         assert list(result) == expected
 

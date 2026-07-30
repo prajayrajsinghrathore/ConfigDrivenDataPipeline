@@ -142,9 +142,7 @@ class TestAdjustDestPaths:
 
     def test_adjusts_local_file_path(self):
         p = PartitionInfo(enabled=True, column="date", value="2025-07-15")
-        dest = {
-            "primary": {"type": "local_file", "path": "/data/output.csv"}
-        }
+        dest = {"primary": {"type": "local_file", "path": "/data/output.csv"}}
         p.adjust_dest_paths(dest)
         assert "date=2025-07-15" in dest["primary"]["path"]
 
@@ -156,8 +154,6 @@ class TestAdjustDestPaths:
 
     def test_no_op_when_disabled(self):
         p = PartitionInfo(enabled=False, column="date", value="2025-07-15")
-        dest = {
-            "primary": {"type": "local_file", "path": "/data/output.csv"}
-        }
+        dest = {"primary": {"type": "local_file", "path": "/data/output.csv"}}
         p.adjust_dest_paths(dest)
         assert dest["primary"]["path"] == "/data/output.csv"

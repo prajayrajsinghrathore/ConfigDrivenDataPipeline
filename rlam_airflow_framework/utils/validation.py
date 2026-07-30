@@ -10,7 +10,7 @@ on them without pulling in unrelated concerns.
 import re
 from typing import Any
 
-import pandas as pd
+import polars as pl
 
 
 def validate_identifier(identifier: str, identifier_type: str = "identifier") -> str:
@@ -41,7 +41,7 @@ def validate_identifier(identifier: str, identifier_type: str = "identifier") ->
     return identifier
 
 
-def validate_dataframe(df: Any, operation: str) -> pd.DataFrame:
+def validate_dataframe(df: Any, operation: str) -> pl.DataFrame:
     """
     Validate that input is a non-None DataFrame.
 
@@ -59,7 +59,7 @@ def validate_dataframe(df: Any, operation: str) -> pd.DataFrame:
     if df is None:
         raise ValueError(f"DataFrame cannot be None for {operation}")
 
-    if not isinstance(df, pd.DataFrame):
+    if not isinstance(df, pl.DataFrame):
         raise TypeError(f"Expected DataFrame for {operation}, got {type(df).__name__}")
 
     return df

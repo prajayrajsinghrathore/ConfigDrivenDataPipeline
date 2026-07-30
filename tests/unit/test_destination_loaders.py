@@ -13,7 +13,7 @@ local-file tests use a real temp filesystem.
 
 import time
 
-import pandas as pd
+import polars as pl
 import pytest
 from snowflake.connector.errors import OperationalError
 from unittest.mock import patch
@@ -42,7 +42,9 @@ _HOOK_PROC = "rlam_airflow_framework.destinations.stored_procedure.SnowflakeHook
 
 
 def _ctx(**kwargs):
-    defaults = dict(topic="pipeline-events", correlation_id="cid-123", dest_label="primary")
+    defaults = dict(
+        topic="pipeline-events", correlation_id="cid-123", dest_label="primary"
+    )
     defaults.update(kwargs)
     return LoadContext(**defaults)
 
@@ -65,25 +67,27 @@ class TestLocalFileLoader:
 
     def test_writes_parquet_and_returns_timestamped_path(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
-        df.to_parquet(df_path, index=False)
+        df = pl.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+        df.write_parquet(df_path)
 
-        result = LocalFileLoader().load(df_path, {"type": "local_file", "path": "out.parquet"}, _ctx())
+        result = LocalFileLoader().load(
+            df_path, {"type": "local_file", "path": "out.parquet"}, _ctx()
+        )
 
         assert result.endswith(".parquet")
         assert "out" in result  # timestamp inserted before the extension
-        written = pd.read_parquet(result)
+        written = pl.read_parquet(result)
         assert written.equals(df)
 
     def test_writes_csv(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        df = pd.DataFrame({"a": [1]})
-        df.to_parquet(df_path, index=False)
+        df = pl.DataFrame({"a": [1]})
+        df.write_parquet(df_path)
         result = LocalFileLoader().load(
             df_path, {"type": "local_file", "path": "out.csv", "format": "csv"}, _ctx()
         )
         assert result.endswith(".csv")
-        assert pd.read_csv(result).equals(df)
+        assert pl.read_csv(result).equals(df)
 
     def test_empty_dataframe_short_circuits(self):
         result = LocalFileLoader().load(
@@ -100,9 +104,11 @@ class TestLocalFileLoader:
             "sub/C:/evil.txt",
         ],
     )
-    def test_rejects_path_traversal_and_drive_letter_escapes(self, malicious_path, tmp_path):
+    def test_rejects_path_traversal_and_drive_letter_escapes(
+        self, malicious_path, tmp_path
+    ):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(DataLoadError):
             LocalFileLoader().load(
                 df_path, {"type": "local_file", "path": malicious_path}, _ctx()
@@ -118,7 +124,7 @@ class TestSnowflakeTableLoader:
     @patch(_HOOK_TABLE)
     def test_happy_path_uses_put_and_copy(self, mock_hook_cls, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"id": [1, 2], "name": ["a", "b"]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"id": [1, 2], "name": ["a", "b"]}).write_parquet(df_path)
         cfg = {"type": "snowflake_table", "table": "MYSCHEMA.MYTABLE"}
 
         cursor = mock_hook_cls.return_value.get_conn.return_value.cursor.return_value
@@ -128,16 +134,18 @@ class TestSnowflakeTableLoader:
 
         assert "Loaded 2 rows" in result
         assert "MYTABLE" in result
-        
+
         cursor = mock_hook_cls.return_value.get_conn.return_value.cursor.return_value
         assert cursor.execute.called
 
     def test_invalid_table_name_rejected(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"id": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"id": [1]}).write_parquet(df_path)
         with pytest.raises(ValueError, match="Invalid table name"):
             SnowflakeTableLoader().load(
-                df_path, {"type": "snowflake_table", "table": "bad; DROP TABLE x"}, _ctx()
+                df_path,
+                {"type": "snowflake_table", "table": "bad; DROP TABLE x"},
+                _ctx(),
             )
 
     def test_empty_dataframe_short_circuits(self):
@@ -157,7 +165,7 @@ class TestSnowflakeTableLoader:
         cursor.execute.side_effect = OperationalError(msg="Connection timeout")
 
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"id": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"id": [1]}).write_parquet(df_path)
         with pytest.raises(TransientDataLoadError):
             SnowflakeTableLoader().load(
                 df_path, {"type": "snowflake_table", "table": "S.T"}, _ctx()
@@ -172,13 +180,15 @@ class TestSnowflakeTableLoader:
 class TestObjectStorageLoader:
     def test_requires_uri_or_path_and_conn(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(ValueError, match="uri.*or.*path"):
             ObjectStorageLoader().load(df_path, {"type": "object_storage"}, _ctx())
 
     def test_empty_dataframe_short_circuits(self):
         result = ObjectStorageLoader().load(
-            "missing.parquet", {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
+            "missing.parquet",
+            {"type": "object_storage", "uri": "az://c@conn/x.parquet"},
+            _ctx(),
         )
         assert "missing file" in result
 
@@ -186,20 +196,24 @@ class TestObjectStorageLoader:
     def test_connection_error_during_upload_is_transient(self, mock_copy, tmp_path):
         mock_copy.side_effect = ConnectionError("refused")
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(TransientObjectStorageError):
             ObjectStorageLoader().load(
-                df_path, {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
+                df_path,
+                {"type": "object_storage", "uri": "az://c@conn/x.parquet"},
+                _ctx(),
             )
 
     @patch("shutil.copyfileobj")
     def test_unexpected_error_during_upload_is_deterministic(self, mock_copy, tmp_path):
         mock_copy.side_effect = RuntimeError("permission denied")
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(ObjectStorageError) as exc_info:
             ObjectStorageLoader().load(
-                df_path, {"type": "object_storage", "uri": "az://c@conn/x.parquet"}, _ctx()
+                df_path,
+                {"type": "object_storage", "uri": "az://c@conn/x.parquet"},
+                _ctx(),
             )
         assert not isinstance(exc_info.value, TransientObjectStorageError)
 
@@ -213,7 +227,7 @@ class TestStoredProcedureLoader:
     @patch(_HOOK_PROC)
     def test_calls_procedure_and_returns_summary(self, mock_hook_cls, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         cfg = {
             "type": "stored_procedure",
             "procedure": "ANALYTICS.SP_AGG",
@@ -234,7 +248,7 @@ class TestStoredProcedureLoader:
         )
 
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         cfg = {
             "type": "stored_procedure",
             "procedure": "ANALYTICS.SP_AGG",
@@ -245,7 +259,7 @@ class TestStoredProcedureLoader:
 
     def test_invalid_procedure_name_rejected(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(ValueError, match="procedure name"):
             StoredProcedureLoader().load(
                 df_path, {"type": "stored_procedure", "procedure": "bad; DROP"}, _ctx()
@@ -261,8 +275,12 @@ class TestSnowflakeStageLoader:
     @patch(_HOOK_STAGE)
     def test_puts_file_to_stage_and_returns_summary(self, mock_hook_cls, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
-        cfg = {"type": "snowflake_stage", "stage_name": "MY_STAGE", "file_name": "data.csv"}
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
+        cfg = {
+            "type": "snowflake_stage",
+            "stage_name": "MY_STAGE",
+            "file_name": "data.csv",
+        }
         result = SnowflakeStageLoader().load(df_path, cfg, _ctx())
 
         assert "MY_STAGE" in result
@@ -274,8 +292,12 @@ class TestSnowflakeStageLoader:
             msg="Connection timeout"
         )
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
-        cfg = {"type": "snowflake_stage", "stage_name": "MY_STAGE", "file_name": "data.csv"}
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
+        cfg = {
+            "type": "snowflake_stage",
+            "stage_name": "MY_STAGE",
+            "file_name": "data.csv",
+        }
         with pytest.raises(TransientDataLoadError):
             SnowflakeStageLoader().load(df_path, cfg, _ctx())
 
@@ -283,16 +305,26 @@ class TestSnowflakeStageLoader:
     def test_deterministic_put_error_is_not_transient(self, mock_hook_cls, tmp_path):
         mock_hook_cls.return_value.run.side_effect = RuntimeError("syntax error")
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
-        cfg = {"type": "snowflake_stage", "stage_name": "MY_STAGE", "file_name": "data.csv"}
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
+        cfg = {
+            "type": "snowflake_stage",
+            "stage_name": "MY_STAGE",
+            "file_name": "data.csv",
+        }
         with pytest.raises(Exception) as exc_info:
             SnowflakeStageLoader().load(df_path, cfg, _ctx())
         assert not isinstance(exc_info.value, TransientDataLoadError)
 
     def test_invalid_stage_name_rejected(self, tmp_path):
         df_path = str(tmp_path / "test.parquet")
-        pd.DataFrame({"a": [1]}).to_parquet(df_path, index=False)
+        pl.DataFrame({"a": [1]}).write_parquet(df_path)
         with pytest.raises(ValueError, match="stage name"):
             SnowflakeStageLoader().load(
-                df_path, {"type": "snowflake_stage", "stage_name": "bad; DROP", "file_name": "f.csv"}, _ctx()
+                df_path,
+                {
+                    "type": "snowflake_stage",
+                    "stage_name": "bad; DROP",
+                    "file_name": "f.csv",
+                },
+                _ctx(),
             )

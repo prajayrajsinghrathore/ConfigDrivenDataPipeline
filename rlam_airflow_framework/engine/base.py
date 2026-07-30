@@ -20,6 +20,7 @@ class TransformationStep(Generic[TConfig], ABC):
     An isolated, strictly-typed operation within the pipeline.
     Declares accepted backends and outputs a well-defined backend.
     """
+
     config_type: type[TConfig]
 
     @property
@@ -29,7 +30,9 @@ class TransformationStep(Generic[TConfig], ABC):
         pass
 
     @abstractmethod
-    def output_backend(self, input_backend: DataBackend, config: TConfig) -> DataBackend:
+    def output_backend(
+        self, input_backend: DataBackend, config: TConfig
+    ) -> DataBackend:
         """The backend produced when given a specific input backend."""
         pass
 
@@ -62,6 +65,7 @@ class DataSource(ABC):
 
 class WriteResult(BaseModel):
     """Operational metadata returned after a successful sink save."""
+
     destination: str
     row_count: Optional[int]
     byte_count: Optional[int]

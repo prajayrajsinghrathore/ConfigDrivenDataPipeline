@@ -69,5 +69,5 @@ def build_transient_retry_policy(config: Dict[str, Any]) -> ExceptionRetryPolicy
                 reason="Transient connection or timeout error",
             ),
         ],
-        default=RetryAction.DEFAULT, # Defer to standard Airflow retry logic for unlisted exceptions
+        default=RetryAction.DEFAULT,  # Defer to standard Airflow retry logic for unlisted exceptions
     )

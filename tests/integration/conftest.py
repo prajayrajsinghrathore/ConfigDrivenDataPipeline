@@ -33,4 +33,6 @@ def register_integration_tenant(monkeypatch):
         )
         return settings
 
-    monkeypatch.setattr(ConfigLoader, "load_global_settings", load_global_with_test_tenant)
+    monkeypatch.setattr(
+        ConfigLoader, "load_global_settings", load_global_with_test_tenant
+    )

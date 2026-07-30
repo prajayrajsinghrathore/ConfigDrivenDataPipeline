@@ -19,12 +19,15 @@ _log = structlog.get_logger(__name__)
 # from pipeline YAML, so it must never be trusted as a literal filesystem
 # path — a config like "../../../../opt/airflow/airflow.cfg" would otherwise
 # let a pipeline overwrite arbitrary files on the worker pod.
-_DEFAULT_OUTPUT_ROOT = Path(os.getenv("AIRFLOW_HOME", "/opt/airflow")) / "data" / "local_file_output"
+_DEFAULT_OUTPUT_ROOT = (
+    Path(os.getenv("AIRFLOW_HOME", "/opt/airflow")) / "data" / "local_file_output"
+)
 LOCAL_FILE_OUTPUT_ROOT = Path(
     os.getenv("LOCAL_FILE_OUTPUT_ROOT", str(_DEFAULT_OUTPUT_ROOT))
 ).resolve()
 
 
+@DestinationLoader.register("local_file")
 class LocalFileLoader(DestinationLoader):
     """Write the DataFrame to a run-scoped local file, sandboxed under LOCAL_FILE_OUTPUT_ROOT."""
 
@@ -59,7 +62,11 @@ class LocalFileLoader(DestinationLoader):
                     destination=str(raw_path),
                 )
 
-        candidate = LOCAL_FILE_OUTPUT_ROOT.joinpath(*segments) if segments else LOCAL_FILE_OUTPUT_ROOT
+        candidate = (
+            LOCAL_FILE_OUTPUT_ROOT.joinpath(*segments)
+            if segments
+            else LOCAL_FILE_OUTPUT_ROOT
+        )
         candidate = candidate.resolve()
 
         try:
@@ -86,9 +93,7 @@ class LocalFileLoader(DestinationLoader):
             ext = f".{file_format}"
         full_path = f"{base}_{run_token}{ext}"
 
-        logger.info(
-            f"Saving to local file: {full_path}, format={file_format}"
-        )
+        logger.info(f"Saving to local file: {full_path}, format={file_format}")
 
         try:
             start_time = time.time()
@@ -96,13 +101,20 @@ class LocalFileLoader(DestinationLoader):
 
             if file_format == "parquet":
                 import shutil
+
                 shutil.copy(df_path, full_path)
             elif file_format == "csv":
                 import duckdb
-                duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (HEADER, FORMAT CSV)")
+
+                duckdb.execute(
+                    f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (HEADER, FORMAT CSV)"
+                )
             elif file_format == "json":
                 import duckdb
-                duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (FORMAT JSON, ARRAY TRUE)")
+
+                duckdb.execute(
+                    f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{full_path}' (FORMAT JSON, ARRAY TRUE)"
+                )
             else:
                 raise ValueError(
                     f"Unsupported format: {file_format}. Supported: parquet, csv, json"
@@ -110,13 +122,12 @@ class LocalFileLoader(DestinationLoader):
 
             elapsed = time.time() - start_time
             logger.info(
-                f"Successfully saved to local file: {full_path}, "
-                f"elapsed={elapsed:.2f}s"
+                f"Successfully saved to local file: {full_path}, elapsed={elapsed:.2f}s"
             )
             return full_path
 
         except Exception as e:
-            logger.error(f"Local file save failed: {e}", exc_info=True)
+            logger.error(f"Local file save failed: {e}")
             raise DataLoadError(
                 f"Failed to save to local file: {str(e)}",
                 destination=file_path,

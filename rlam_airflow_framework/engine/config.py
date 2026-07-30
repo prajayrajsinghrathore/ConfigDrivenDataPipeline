@@ -65,4 +65,5 @@ TransformationConfig = Annotated[
 
 class PipelineConfig(BaseModel):
     """Overall configuration for the transformation phase."""
+
     transformations: List[TransformationConfig] = Field(default_factory=list)

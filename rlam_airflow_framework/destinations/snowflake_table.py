@@ -21,6 +21,7 @@ from rlam_airflow_framework.destinations.primitives import (
 _log = structlog.get_logger(__name__)
 
 
+@DestinationLoader.register("snowflake_table")
 class SnowflakeTableLoader(DestinationLoader):
     """
     Load staged Parquet files into a Snowflake table natively via PUT and COPY INTO.
@@ -28,7 +29,9 @@ class SnowflakeTableLoader(DestinationLoader):
 
     dest_type = "snowflake_table"
 
-    def _write(self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext) -> str:
+    def _write(
+        self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext
+    ) -> str:
         parts = str(dest_config.get("table")).split(".")
         table_name = validate_identifier(parts[-1], "table name")
         schema = validate_identifier(
@@ -53,7 +56,7 @@ class SnowflakeTableLoader(DestinationLoader):
             conn = None
             cur = None
             transaction_started = False
-            
+
             try:
                 start_time = time.time()
                 conn = hook.get_conn()
@@ -65,19 +68,27 @@ class SnowflakeTableLoader(DestinationLoader):
 
                 # If replace mode without partition, we load into a temp table then swap
                 if if_exists == "replace" and not partition_column:
-                    logger.info(f"Replace mode: will load into temp table {temp_table_name} and swap")
-                    cur.execute(f"CREATE TABLE IF NOT EXISTS {full_table_name} (dummy INT)")
-                    cur.execute(f"CREATE OR REPLACE TABLE {temp_table_name} CLONE {full_table_name}")
+                    logger.info(
+                        f"Replace mode: will load into temp table {temp_table_name} and swap"
+                    )
+                    cur.execute(
+                        f"CREATE TABLE IF NOT EXISTS {full_table_name} (dummy INT)"
+                    )
+                    cur.execute(
+                        f"CREATE OR REPLACE TABLE {temp_table_name} CLONE {full_table_name}"
+                    )
                     cur.execute(f"TRUNCATE TABLE {temp_table_name}")
                     copy_target_table = temp_table_name
 
                 # 1. PUT the Parquet file into an internal stage
                 stage_name = f"~/{table_name}_{ctx.correlation_id}"
-                
+
                 # Windows path fix for PUT command
-                normalized_path = df_path.replace('\\', '/')
-                put_sql = f"PUT 'file://{normalized_path}' @{stage_name} AUTO_COMPRESS=TRUE"
-                
+                normalized_path = df_path.replace("\\", "/")
+                put_sql = (
+                    f"PUT 'file://{normalized_path}' @{stage_name} AUTO_COMPRESS=TRUE"
+                )
+
                 logger.debug(f"Uploading Parquet: {put_sql}")
                 cur.execute(put_sql)
 
@@ -87,9 +98,13 @@ class SnowflakeTableLoader(DestinationLoader):
 
                 # If replacing a partition, delete old data first
                 if if_exists == "replace" and partition_column and partition_value:
-                    delete_sql = f'DELETE FROM {full_table_name} WHERE "{partition_column}" = %s'
+                    delete_sql = (
+                        f'DELETE FROM {full_table_name} WHERE "{partition_column}" = %s'
+                    )
                     cur.execute(delete_sql, (partition_value,))
-                    logger.info(f"Deleted partition {partition_column}={partition_value}")
+                    logger.info(
+                        f"Deleted partition {partition_column}={partition_value}"
+                    )
 
                 # 2. COPY INTO
                 match_by = dest_config.get("match_by_column_name", "CASE_SENSITIVE")
@@ -99,23 +114,27 @@ class SnowflakeTableLoader(DestinationLoader):
                     f"FILE_FORMAT = (TYPE = PARQUET) "
                     f"MATCH_BY_COLUMN_NAME = {match_by}"
                 )
-                
+
                 logger.debug(f"Executing COPY INTO: {copy_sql}")
                 cur.execute(copy_sql)
-                
+
                 copy_result = cur.fetchall()
                 rows_loaded = sum(row[3] for row in copy_result) if copy_result else 0
 
                 # 3. Swap if replace mode
                 if if_exists == "replace" and not partition_column:
-                    swap_sql = f"ALTER TABLE {copy_target_table} SWAP WITH {full_table_name}"
+                    swap_sql = (
+                        f"ALTER TABLE {copy_target_table} SWAP WITH {full_table_name}"
+                    )
                     cur.execute(swap_sql)
                     cur.execute(f"DROP TABLE {copy_target_table}")
-                    logger.info(f"Swapped temp table {copy_target_table} with {full_table_name}")
+                    logger.info(
+                        f"Swapped temp table {copy_target_table} with {full_table_name}"
+                    )
 
                 conn.commit()
                 transaction_started = False
-                
+
                 # Cleanup stage
                 try:
                     conn.autocommit(True)
@@ -144,7 +163,7 @@ class SnowflakeTableLoader(DestinationLoader):
 
                 raise DataLoadError(
                     f"Failed to load Parquet to Snowflake table {full_table_name}: {e}",
-                    destination=self.dest_type
+                    destination=self.dest_type,
                 ) from e
             finally:
                 if cur:
@@ -162,7 +181,7 @@ class SnowflakeTableLoader(DestinationLoader):
             # already matched SNOWFLAKE_TRANSIENT_ERRORS (is_transient_
             # snowflake_error above) and still failed; a longer Airflow-level
             # retry delay may outlast the underlying outage.
-            logger.error("All retry attempts exhausted", exc_info=True)
+            logger.error("All retry attempts exhausted")
             raise TransientDataLoadError(
                 f"Failed to load data after {DEFAULT_RETRY_ATTEMPTS} attempts",
                 destination=full_table_name,

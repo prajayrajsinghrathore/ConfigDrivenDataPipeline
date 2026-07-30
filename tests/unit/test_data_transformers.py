@@ -1,3 +1,6 @@
+# ruff: noqa: E402
+from polars.testing import assert_frame_equal
+
 """
 Unit tests for Data Transformers.
 
@@ -13,8 +16,7 @@ depends on Airflow which doesn't run natively on Windows.
 """
 
 import pytest
-import pandas as pd
-import numpy as np
+import polars as pl
 from typing import Dict, List, Any, Literal, Optional, cast
 
 
@@ -26,100 +28,94 @@ from typing import Dict, List, Any, Literal, Optional, cast
 class DataTransformer:
     """
     Mock Data Transformer for testing.
-
-    This provides the same transformation interface for testing purposes,
-    without requiring Airflow dependencies.
     """
 
-    def rename_columns(self, df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
-        """Rename columns based on mapping."""
-        return df.rename(columns=mapping)
+    def rename_columns(self, df: pl.DataFrame, mapping: Dict[str, str]) -> pl.DataFrame:
+        return df.rename(mapping)
 
-    def filter_rows(self, df: pd.DataFrame, condition: str) -> pd.DataFrame:
-        """Filter rows based on a condition string."""
-        return cast(pd.DataFrame, df.query(condition))
+    def filter_rows(self, df: pl.DataFrame, condition: str) -> pl.DataFrame:
+        import duckdb
 
-    def select_columns(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
-        """Select specific columns."""
-        return cast(pd.DataFrame, df[columns])
+        cond = (
+            condition.replace("==", "=")
+            .replace(" and ", " AND ")
+            .replace(" or ", " OR ")
+        )
+        return duckdb.sql(f"SELECT * FROM df WHERE {cond}").pl()
+
+    def select_columns(self, df: pl.DataFrame, columns: List[str]) -> pl.DataFrame:
+        return df.select(columns)
 
     def add_formula_column(
-        self, df: pd.DataFrame, column_name: str, formula: str
-    ) -> pd.DataFrame:
-        """Add a new column based on a formula."""
-        result = df.copy()
-        # Simple formula evaluation using eval with DataFrame context
-        result[column_name] = result.eval(formula)
-        return result
+        self, df: pl.DataFrame, column_name: str, formula: str
+    ) -> pl.DataFrame:
+        import duckdb
+
+        return duckdb.sql(f"SELECT *, {formula} AS {column_name} FROM df").pl()
 
     def convert_type(
-        self, df: pd.DataFrame, column: str, target_type: str
-    ) -> pd.DataFrame:
-        """Convert column to a different type."""
-        result = df.copy()
-
+        self, df: pl.DataFrame, column: str, target_type: str
+    ) -> pl.DataFrame:
         if target_type == "string":
-            result[column] = result[column].astype(str)
+            return df.with_columns(pl.col(column).cast(pl.Utf8))
         elif target_type == "int":
-            result[column] = result[column].astype(int)
+            return df.with_columns(pl.col(column).cast(pl.Int64))
         elif target_type == "float":
-            result[column] = result[column].astype(float)
+            return df.with_columns(pl.col(column).cast(pl.Float64))
         elif target_type == "datetime":
-            result[column] = pd.to_datetime(result[column])
-
-        return result
+            return df.with_columns(pl.col(column).str.to_datetime())
+        return df
 
     def aggregate(
-        self, df: pd.DataFrame, group_by: List[str], aggregations: Dict[str, str]
-    ) -> pd.DataFrame:
-        """Aggregate data by groups."""
-        return df.groupby(group_by).agg(aggregations).reset_index()
+        self, df: pl.DataFrame, group_by: List[str], aggregations: Dict[str, str]
+    ) -> pl.DataFrame:
+        aggs = []
+        for col_name, func in aggregations.items():
+            if func == "sum":
+                aggs.append(pl.col(col_name).sum().alias(col_name))
+            elif func == "mean":
+                aggs.append(pl.col(col_name).mean().alias(col_name))
+        return df.group_by(group_by).agg(aggs)
 
     def drop_duplicates(
         self,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         subset: Optional[List[str]] = None,
         keep: Literal["first", "last", False] = "first",
-    ) -> pd.DataFrame:
-        """Drop duplicate rows."""
-        return df.drop_duplicates(subset=subset, keep=keep)
+    ) -> pl.DataFrame:
+        if keep is False:
+            k = "none"
+        else:
+            k = keep
+        return df.unique(subset=subset, keep=k)
 
     def fill_nulls(
         self,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         column: str,
         value: Any = None,
         method: Optional[str] = None,
-    ) -> pd.DataFrame:
-        """Fill null values in a column."""
-        result = df.copy()
-
+    ) -> pl.DataFrame:
         if value is not None:
-            result[column] = result[column].fillna(value)
+            return df.with_columns(pl.col(column).fill_null(value))
         elif method == "mean":
-            result[column] = result[column].fillna(result[column].mean())
+            return df.with_columns(pl.col(column).fill_null(strategy="mean"))
         elif method == "ffill":
-            result[column] = result[column].ffill()
+            return df.with_columns(pl.col(column).fill_null(strategy="forward"))
         elif method == "bfill":
-            result[column] = result[column].bfill()
-
-        return result
+            return df.with_columns(pl.col(column).fill_null(strategy="backward"))
+        return df
 
     def execute_pipeline(
-        self, df: pd.DataFrame, transformations: List[Dict[str, Any]]
-    ) -> pd.DataFrame:
-        """Execute a pipeline of transformations."""
-        result = df.copy()
-
+        self, df: pl.DataFrame, transformations: List[Dict[str, Any]]
+    ) -> pl.DataFrame:
+        result = df.clone()
         for transform in transformations:
             t_type = transform.get("type")
-
             if t_type == "rename_columns":
                 result = self.rename_columns(result, transform.get("mapping", {}))
             elif t_type == "filter_rows":
-                result = self.filter_rows(
-                    result, cast(str, transform.get("condition"))
-                )
+                result = self.filter_rows(result, cast(str, transform.get("condition")))
             elif t_type == "select_columns":
                 result = self.select_columns(result, transform.get("columns", []))
             elif t_type == "add_formula_column":
@@ -128,7 +124,31 @@ class DataTransformer:
                     cast(str, transform.get("column_name")),
                     cast(str, transform.get("formula")),
                 )
-
+            elif t_type == "convert_type":
+                result = self.convert_type(
+                    result,
+                    cast(str, transform.get("column")),
+                    cast(str, transform.get("target_type")),
+                )
+            elif t_type == "aggregate":
+                result = self.aggregate(
+                    result,
+                    cast(List[str], transform.get("group_by")),
+                    cast(Dict[str, str], transform.get("aggregations")),
+                )
+            elif t_type == "drop_duplicates":
+                result = self.drop_duplicates(
+                    result,
+                    cast(Optional[List[str]], transform.get("subset")),
+                    transform.get("keep", "first"),
+                )
+            elif t_type == "fill_nulls":
+                result = self.fill_nulls(
+                    result,
+                    cast(str, transform.get("column")),
+                    transform.get("value"),
+                    transform.get("method"),
+                )
         return result
 
 
@@ -142,7 +162,7 @@ class TestDataTransformerRenameColumns:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "old_name": [1, 2, 3],
                 "another_old": ["a", "b", "c"],
@@ -155,6 +175,13 @@ class TestDataTransformerRenameColumns:
         result = transformer.rename_columns(df, {"old_name": "new_name"})
         assert "new_name" in result.columns
         assert "old_name" not in result.columns
+
+    def test_rename_nonexistent_column(self, transformer, df):
+        """Test renaming a column that doesn't exist."""
+        import polars.exceptions
+
+        with pytest.raises(polars.exceptions.ColumnNotFoundError):
+            transformer.rename_columns(df, {"nonexistent": "new"})
 
     def test_rename_multiple_columns(self, transformer, df):
         """Test renaming multiple columns."""
@@ -172,12 +199,6 @@ class TestDataTransformerRenameColumns:
         result = transformer.rename_columns(df, {"old_name": "new_name"})
         assert list(result["new_name"]) == [1, 2, 3]
 
-    def test_rename_nonexistent_column(self, transformer, df):
-        """Test renaming non-existent column (should ignore or error)."""
-        # Behavior depends on implementation - either ignore or raise
-        # Just verify it doesn't crash
-        transformer.rename_columns(df, {"nonexistent": "new"})
-
 
 @pytest.mark.unit
 class TestDataTransformerFilterRows:
@@ -189,7 +210,7 @@ class TestDataTransformerFilterRows:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "name": ["Alice", "Bob", "Charlie", "David"],
                 "age": [25, 30, 35, 40],
@@ -236,7 +257,7 @@ class TestDataTransformerSelectColumns:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "a": [1, 2, 3],
                 "b": [4, 5, 6],
@@ -276,7 +297,7 @@ class TestDataTransformerAddFormulaColumn:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "price": [10.0, 20.0, 30.0],
                 "quantity": [2, 3, 1],
@@ -301,7 +322,7 @@ class TestDataTransformerAddFormulaColumn:
 
     def test_add_formula_with_functions(self, transformer, df):
         """Test formula with mathematical functions."""
-        # Note: pandas.eval has limited function support
+        # Note: DuckDB has limited function support in this basic test mock
         # This test verifies basic formulas work
         result = transformer.add_formula_column(df, "doubled", "price * 2")
         assert "doubled" in result.columns
@@ -322,30 +343,32 @@ class TestDataTransformerTypeConversions:
 
     def test_convert_to_string(self, transformer):
         """Test converting to string type."""
-        df = pd.DataFrame({"num": [1, 2, 3]})
+        df = pl.DataFrame({"num": [1, 2, 3]})
         result = transformer.convert_type(df, "num", "string")
         # Accept both object and StringDtype
         dtype_str = str(result["num"].dtype).lower()
-        assert result["num"].dtype == object or "string" in dtype_str or "str" in dtype_str
-        assert str(result["num"].iloc[0]) == "1"
+        assert (
+            result["num"].dtype == object or "string" in dtype_str or "str" in dtype_str
+        )
+        assert str(result["num"][0]) == "1"
 
     def test_convert_to_int(self, transformer):
         """Test converting to integer type."""
-        df = pd.DataFrame({"float_col": [1.5, 2.7, 3.2]})
+        df = pl.DataFrame({"float_col": [1.5, 2.7, 3.2]})
         result = transformer.convert_type(df, "float_col", "int")
-        assert result["float_col"].dtype in [np.int32, np.int64, int]
+        assert result["float_col"].dtype == pl.Int64
 
     def test_convert_to_float(self, transformer):
         """Test converting to float type."""
-        df = pd.DataFrame({"int_col": [1, 2, 3]})
+        df = pl.DataFrame({"int_col": [1, 2, 3]})
         result = transformer.convert_type(df, "int_col", "float")
-        assert result["int_col"].dtype == np.float64
+        assert result["int_col"].dtype == pl.Float64
 
     def test_convert_to_datetime(self, transformer):
         """Test converting to datetime type."""
-        df = pd.DataFrame({"date_str": ["2026-01-01", "2026-01-02", "2026-01-03"]})
+        df = pl.DataFrame({"date_str": ["2026-01-01", "2026-01-02", "2026-01-03"]})
         result = transformer.convert_type(df, "date_str", "datetime")
-        assert pd.api.types.is_datetime64_any_dtype(result["date_str"])
+        assert result["date_str"].dtype == pl.Datetime
 
 
 @pytest.mark.unit
@@ -358,7 +381,7 @@ class TestDataTransformerAggregations:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "category": ["A", "A", "B", "B", "B"],
                 "value": [10, 20, 30, 40, 50],
@@ -372,16 +395,16 @@ class TestDataTransformerAggregations:
             df, group_by=["category"], aggregations={"value": "sum"}
         )
         assert len(result) == 2
-        assert result[result["category"] == "A"]["value"].iloc[0] == 30
-        assert result[result["category"] == "B"]["value"].iloc[0] == 120
+        assert result.filter(pl.col("category") == "A")["value"][0] == 30
+        assert result.filter(pl.col("category") == "B")["value"][0] == 120
 
     def test_group_mean(self, transformer, df):
         """Test mean aggregation."""
         result = transformer.aggregate(
             df, group_by=["category"], aggregations={"value": "mean"}
         )
-        assert result[result["category"] == "A"]["value"].iloc[0] == 15.0
-        assert result[result["category"] == "B"]["value"].iloc[0] == 40.0
+        assert result.filter(pl.col("category") == "A")["value"][0] == 15.0
+        assert result.filter(pl.col("category") == "B")["value"][0] == 40.0
 
     def test_group_multiple_aggregations(self, transformer, df):
         """Test multiple aggregations."""
@@ -402,7 +425,7 @@ class TestDataTransformerDropDuplicates:
 
     def test_drop_all_duplicates(self, transformer):
         """Test dropping all duplicate rows."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "a": [1, 1, 2, 3],
                 "b": ["x", "x", "y", "z"],
@@ -413,7 +436,7 @@ class TestDataTransformerDropDuplicates:
 
     def test_drop_duplicates_subset(self, transformer):
         """Test dropping duplicates based on subset of columns."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "a": [1, 1, 1],
                 "b": ["x", "y", "x"],
@@ -424,14 +447,14 @@ class TestDataTransformerDropDuplicates:
 
     def test_drop_duplicates_keep_first(self, transformer):
         """Test keeping first occurrence."""
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "a": [1, 2, 1],
                 "b": ["first", "second", "third"],
             }
         )
         result = transformer.drop_duplicates(df, subset=["a"], keep="first")
-        assert "first" in result["b"].values
+        assert "first" in result["b"].to_list()
 
 
 @pytest.mark.unit
@@ -444,21 +467,21 @@ class TestDataTransformerFillNulls:
 
     def test_fill_with_value(self, transformer):
         """Test filling nulls with a specific value."""
-        df = pd.DataFrame({"a": [1, None, 3, None, 5]})
+        df = pl.DataFrame({"a": [1, None, 3, None, 5]})
         result = transformer.fill_nulls(df, "a", value=0)
-        assert result["a"].isna().sum() == 0
-        assert result["a"].iloc[1] == 0
+        assert result["a"].null_count() == 0
+        assert result["a"][1] == 0
 
     def test_fill_with_mean(self, transformer):
         """Test filling nulls with mean."""
-        df = pd.DataFrame({"a": [10.0, None, 30.0, None, 50.0]})
+        df = pl.DataFrame({"a": [10.0, None, 30.0, None, 50.0]})
         result = transformer.fill_nulls(df, "a", method="mean")
-        assert result["a"].isna().sum() == 0
-        assert result["a"].iloc[1] == 30.0  # mean of 10, 30, 50
+        assert result["a"].null_count() == 0
+        assert result["a"][1] == 30.0  # mean of 10, 30, 50
 
     def test_fill_with_forward_fill(self, transformer):
         """Test filling nulls with forward fill."""
-        df = pd.DataFrame({"a": [1, None, None, 4, None]})
+        df = pl.DataFrame({"a": [1, None, None, 4, None]})
         result = transformer.fill_nulls(df, "a", method="ffill")
         expected = [1, 1, 1, 4, 4]
         assert list(result["a"]) == expected
@@ -474,7 +497,7 @@ class TestDataTransformerPipelineExecution:
 
     @pytest.fixture
     def df(self):
-        return pd.DataFrame(
+        return pl.DataFrame(
             {
                 "old_name": [1, 2, 3, 4, 5],
                 "price": [10.0, 20.0, 30.0, 40.0, 50.0],
@@ -484,7 +507,7 @@ class TestDataTransformerPipelineExecution:
 
     def test_execute_pipeline(self, transformer, df):
         """Test executing a full transformation pipeline."""
-        # Simplified pipeline that works with pandas.eval
+        # Simplified pipeline that works with DuckDB SQL mock
         pipeline = [
             {"type": "rename_columns", "mapping": {"old_name": "new"}},
             {"type": "filter_rows", "condition": "price > 15"},
@@ -506,11 +529,11 @@ class TestDataTransformerPipelineExecution:
     def test_empty_pipeline(self, transformer, df):
         """Test executing empty pipeline returns original."""
         result = transformer.execute_pipeline(df, [])
-        pd.testing.assert_frame_equal(result, df)
+        assert_frame_equal(result, df)
 
     def test_pipeline_preserves_index(self, transformer, df):
         """Test that pipeline preserves DataFrame index."""
-        df_indexed = df.set_index("old_name")
+        df_indexed = df
         transformations = [{"type": "filter_rows", "condition": "price > 15"}]
         result = transformer.execute_pipeline(df_indexed, transformations)
-        assert result.index.name == "old_name" or len(result) > 0
+        assert len(result) > 0

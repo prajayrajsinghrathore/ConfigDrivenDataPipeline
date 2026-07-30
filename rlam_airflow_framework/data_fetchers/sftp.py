@@ -89,6 +89,7 @@ class SSHHostKeyPolicy(paramiko.MissingHostKeyPolicy):
                 log.warning(f"Failed to save host key: {e}")
 
 
+@DataFetcher.register("sftp")
 class SftpFetcher(DataFetcher):
     """
     Fetches a file from an SFTP server with proper security and error handling.
@@ -103,7 +104,10 @@ class SftpFetcher(DataFetcher):
     """
 
     def fetch(
-        self, config: Dict[str, Any], correlation_id: Optional[str] = None, target_path: Optional[Path] = None
+        self,
+        config: Dict[str, Any],
+        correlation_id: Optional[str] = None,
+        target_path: Optional[Path] = None,
     ) -> Path:
         if not target_path:
             raise ValueError("target_path is required for out-of-core fetching")
@@ -203,38 +207,46 @@ class SftpFetcher(DataFetcher):
             # Check if file exists
             try:
                 file_stat = sftp.stat(remote_path)
-                log.info(
-                    f"File found: {remote_path}, size: {file_stat.st_size} bytes"
-                )
+                log.info(f"File found: {remote_path}, size: {file_stat.st_size} bytes")
             except FileNotFoundError:
                 raise DataFetchError(
                     f"File not found: {remote_path}", source=sftp_conn_id
                 )
 
-            if target_path:
-                import tempfile
-                temp_fd, temp_raw_path = tempfile.mkstemp(suffix=f".{file_format}")
-                os.close(temp_fd)
-                try:
-                    sftp.get(remote_path, temp_raw_path)
-                    download_time = time.time() - start_time - connect_time
-                    log.info(f"File downloaded to disk in {download_time:.2f}s")
-                    
-                    if file_format in ("json", "csv"):
-                        read_func = "read_json_auto" if file_format == "json" else "read_csv_auto"
-                        duckdb.query(f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)")
-                        log.info("Converted streamed SFTP data to Parquet via DuckDB", trace_id=trace_id)
-                    else:
-                        with open(temp_raw_path, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        df = parse_content(content, file_format, trace_id)
-                        df.to_parquet(target_path, index=False, compression="snappy")
-                        log.info("Converted streamed SFTP data to Parquet via Pandas fallback", trace_id=trace_id)
-                        
-                    return target_path
-                finally:
-                    if os.path.exists(temp_raw_path):
-                        os.remove(temp_raw_path)
+            import tempfile
+
+            temp_fd, temp_raw_path = tempfile.mkstemp(suffix=f".{file_format}")
+            os.close(temp_fd)
+            try:
+                sftp.get(remote_path, temp_raw_path)
+                download_time = time.time() - start_time - connect_time
+                log.info(f"File downloaded to disk in {download_time:.2f}s")
+
+                if file_format in ("json", "csv"):
+                    read_func = (
+                        "read_json_auto" if file_format == "json" else "read_csv_auto"
+                    )
+                    duckdb.query(
+                        f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)"
+                    )
+                    log.info(
+                        "Converted streamed SFTP data to Parquet via DuckDB",
+                        trace_id=trace_id,
+                    )
+                else:
+                    with open(temp_raw_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    df = parse_content(content, file_format, trace_id)
+                    df.write_parquet(target_path, compression="snappy")
+                    log.info(
+                        "Converted streamed SFTP data to Parquet via Polars fallback",
+                        trace_id=trace_id,
+                    )
+
+                return target_path
+            finally:
+                if os.path.exists(temp_raw_path):
+                    os.remove(temp_raw_path)
 
         except paramiko.AuthenticationException as e:
             log.error(f"SFTP authentication failed: {e}")

@@ -1,12 +1,4 @@
-import os
-import structlog
-from typing import List
-
-logger = structlog.get_logger(__name__)
-
-
-def discover_config_directories(config_dir: str) -> List[str]:
-    """
+"""
     Discover all directories containing configuration files.
 
     Checks:
@@ -16,6 +8,15 @@ def discover_config_directories(config_dir: str) -> List[str]:
     Returns:
         List of directory paths containing config files
     """
+import os
+import structlog
+from typing import List
+
+logger = structlog.get_logger(__name__)
+
+
+def discover_config_directories(config_dir: str) -> List[str]:
+    
     directories = []
 
     # Check bundle storage path first (for GitDagBundle support)

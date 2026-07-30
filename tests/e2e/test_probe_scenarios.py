@@ -63,7 +63,10 @@ def _scheduler(*airflow_args: str) -> str:
 
 def _kafka_topic_lines(topic: str) -> list:
     out = _docker(
-        "exec", "kafka", "sh", "-c",
+        "exec",
+        "kafka",
+        "sh",
+        "-c",
         f"/opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 "
         f"--topic {topic} --from-beginning --timeout-ms 5000 2>/dev/null",
         check=False,
@@ -79,31 +82,43 @@ def headers():
         timeout=10,
     )
     if response.status_code not in (200, 201):
-        pytest.skip(f"cannot obtain JWT (HTTP {response.status_code}) — is the stack up?")
+        pytest.skip(
+            f"cannot obtain JWT (HTTP {response.status_code}) — is the stack up?"
+        )
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def _unpause(dag_id, headers):
-    requests.patch(f"{API}/dags/{dag_id}", json={"is_paused": False}, headers=headers, timeout=10)
+    requests.patch(
+        f"{API}/dags/{dag_id}", json={"is_paused": False}, headers=headers, timeout=10
+    )
 
 
 def _pause(dag_id, headers):
-    requests.patch(f"{API}/dags/{dag_id}", json={"is_paused": True}, headers=headers, timeout=10)
+    requests.patch(
+        f"{API}/dags/{dag_id}", json={"is_paused": True}, headers=headers, timeout=10
+    )
 
 
 def _trigger(dag_id, headers, run_id, partition_key=None):
     body = {"dag_run_id": run_id, "logical_date": None}
     if partition_key is not None:
         body["partition_key"] = partition_key
-    response = requests.post(f"{API}/dags/{dag_id}/dagRuns", json=body, headers=headers, timeout=10)
-    assert response.status_code == 200, f"trigger failed: {response.status_code} {response.text[:200]}"
+    response = requests.post(
+        f"{API}/dags/{dag_id}/dagRuns", json=body, headers=headers, timeout=10
+    )
+    assert response.status_code == 200, (
+        f"trigger failed: {response.status_code} {response.text[:200]}"
+    )
     return response.json()
 
 
 def _wait_run_state(dag_id, run_id, headers, want=("success", "failed"), timeout=420):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        response = requests.get(f"{API}/dags/{dag_id}/dagRuns/{run_id}", headers=headers, timeout=10)
+        response = requests.get(
+            f"{API}/dags/{dag_id}/dagRuns/{run_id}", headers=headers, timeout=10
+        )
         if response.status_code == 200:
             state = response.json().get("state")
             if state in want:
@@ -123,17 +138,34 @@ def mock_api():
         json.dumps([{"id": i, "v": chr(96 + i)} for i in range(1, 6)])
     )
     _docker(
-        "run", "-d", "--name", name, "--network", COMPOSE_NETWORK,
-        "--network-alias", "mock-api",
-        "-v", f"{srv_dir}:/srv", "python:3.13-alpine", "python", "/srv/mock_api.py",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        COMPOSE_NETWORK,
+        "--network-alias",
+        "mock-api",
+        "-v",
+        f"{srv_dir}:/srv",
+        "python:3.13-alpine",
+        "python",
+        "/srv/mock_api.py",
     )
     try:
         # readiness: reachable from inside the stack
         for _ in range(20):
             code = subprocess.run(
-                ["docker", "exec", "airflow-scheduler", "python", "-c",
-                 "import urllib.request; urllib.request.urlopen('http://mock-api:8000/items?id=0', timeout=3); print('ok')"],
-                capture_output=True, text=True,
+                [
+                    "docker",
+                    "exec",
+                    "airflow-scheduler",
+                    "python",
+                    "-c",
+                    "import urllib.request; urllib.request.urlopen('http://mock-api:8000/items?id=0', timeout=3); print('ok')",
+                ],
+                capture_output=True,
+                text=True,
             )
             if "ok" in code.stdout:
                 break
@@ -148,7 +180,9 @@ def mock_api():
 class TestDeadlineMissProbe:
     def test_deadline_miss_emits_exactly_one_event(self, headers):
         dag_id = "sandbox_deadline_probe"
-        before = sum(1 for line in _kafka_topic_lines("pipeline-alerts") if dag_id in line)
+        before = sum(
+            1 for line in _kafka_topic_lines("pipeline-alerts") if dag_id in line
+        )
 
         _unpause(dag_id, headers)
         try:
@@ -159,7 +193,11 @@ class TestDeadlineMissProbe:
             deadline = time.time() + 360
             after = before
             while time.time() < deadline:
-                after = sum(1 for line in _kafka_topic_lines("pipeline-alerts") if dag_id in line)
+                after = sum(
+                    1
+                    for line in _kafka_topic_lines("pipeline-alerts")
+                    if dag_id in line
+                )
                 if after > before:
                     break
                 time.sleep(15)
@@ -190,14 +228,21 @@ class TestPartitionProbe:
 
             # untouched run's end_date snapshot
             keep = requests.get(
-                f"{API}/dags/{dag_id}/dagRuns/{run_ids[keys[1]]}", headers=headers, timeout=10
+                f"{API}/dags/{dag_id}/dagRuns/{run_ids[keys[1]]}",
+                headers=headers,
+                timeout=10,
             ).json()
 
             # clear ONLY the first partition
             response = requests.post(
                 f"{API}/dags/{dag_id}/clearPartitions",
-                json={"partition_key": keys[0], "clear_task_instances": True, "dry_run": False},
-                headers=headers, timeout=30,
+                json={
+                    "partition_key": keys[0],
+                    "clear_task_instances": True,
+                    "dry_run": False,
+                },
+                headers=headers,
+                timeout=30,
             )
             assert response.status_code == 200, response.text[:200]
             assert response.json()["dag_runs_cleared"] == 1
@@ -205,9 +250,13 @@ class TestPartitionProbe:
             # cleared run re-executes to success; sibling untouched
             assert _wait_run_state(dag_id, run_ids[keys[0]], headers) == "success"
             keep_after = requests.get(
-                f"{API}/dags/{dag_id}/dagRuns/{run_ids[keys[1]]}", headers=headers, timeout=10
+                f"{API}/dags/{dag_id}/dagRuns/{run_ids[keys[1]]}",
+                headers=headers,
+                timeout=10,
             ).json()
-            assert keep_after["end_date"] == keep["end_date"], "sibling partition was touched"
+            assert keep_after["end_date"] == keep["end_date"], (
+                "sibling partition was touched"
+            )
         finally:
             _pause(dag_id, headers)
 
@@ -224,7 +273,11 @@ class TestIncrementalProbe:
             run1 = f"probe_incremental_1_{stamp}"
             _trigger(dag_id, headers, run1)
             assert _wait_run_state(dag_id, run1, headers) == "success"
-            wm1 = _scheduler("variables", "get", f"{dag_id}.high_watermark").strip().splitlines()[-1]
+            wm1 = (
+                _scheduler("variables", "get", f"{dag_id}.high_watermark")
+                .strip()
+                .splitlines()[-1]
+            )
             assert wm1 == "5", f"run1 watermark should be clean numeric 5, got {wm1!r}"
 
             # append the delta
@@ -234,7 +287,11 @@ class TestIncrementalProbe:
             run2 = f"probe_incremental_2_{stamp}"
             _trigger(dag_id, headers, run2)
             assert _wait_run_state(dag_id, run2, headers) == "success"
-            wm2 = _scheduler("variables", "get", f"{dag_id}.high_watermark").strip().splitlines()[-1]
+            wm2 = (
+                _scheduler("variables", "get", f"{dag_id}.high_watermark")
+                .strip()
+                .splitlines()[-1]
+            )
             assert wm2 == "8", f"run2 watermark should advance to 8, got {wm2!r}"
         finally:
             _pause(dag_id, headers)

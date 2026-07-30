@@ -33,11 +33,22 @@ log = structlog.get_logger(__name__)
 # Environment variables take precedence, then fall back to defaults.
 # These align with config/global_settings.yaml timeouts.kafka section.
 
-KAFKA_REQUEST_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_REQUEST", "30")) * 1000  # Convert to ms
+KAFKA_REQUEST_TIMEOUT_MS = (
+    int(os.getenv("TIMEOUT_KAFKA_REQUEST", "30")) * 1000
+)  # Convert to ms
 KAFKA_FLUSH_TIMEOUT = int(os.getenv("TIMEOUT_KAFKA_FLUSH", "10"))
-KAFKA_SOCKET_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_SOCKET", "5")) * 1000  # Convert to ms
-KAFKA_MESSAGE_TIMEOUT_MS = int(os.getenv("TIMEOUT_KAFKA_MESSAGE", "10")) * 1000  # Convert to ms
-KAFKA_CIRCUIT_RECOVERY_TIMEOUT = float(os.getenv("TIMEOUT_KAFKA_CIRCUIT_RECOVERY", os.getenv("KAFKA_CIRCUIT_RECOVERY_TIMEOUT", "30.0")))
+KAFKA_SOCKET_TIMEOUT_MS = (
+    int(os.getenv("TIMEOUT_KAFKA_SOCKET", "5")) * 1000
+)  # Convert to ms
+KAFKA_MESSAGE_TIMEOUT_MS = (
+    int(os.getenv("TIMEOUT_KAFKA_MESSAGE", "10")) * 1000
+)  # Convert to ms
+KAFKA_CIRCUIT_RECOVERY_TIMEOUT = float(
+    os.getenv(
+        "TIMEOUT_KAFKA_CIRCUIT_RECOVERY",
+        os.getenv("KAFKA_CIRCUIT_RECOVERY_TIMEOUT", "30.0"),
+    )
+)
 # How long librdkafka waits to fill a batch before sending it (ms). Each
 # publish_* call used to force a full flush() immediately after produce(),
 # turning every single event into its own blocking network round-trip and
@@ -151,7 +162,7 @@ class KafkaEventPublisher:
     - Circuit breaker for resilience
     - Correlation ID support for distributed tracing
     - Multi-tenancy support with topic namespacing
-    
+
     Uses confluent-kafka for Kafka 4.x (KRaft mode) compatibility.
     """
 
@@ -186,7 +197,7 @@ class KafkaEventPublisher:
             "last_failure_time": None,
         }
         self._metrics_lock = threading.Lock()
-        
+
     def _delivery_callback(self, err, msg):
         """
         Callback for message delivery reports, invoked asynchronously by
@@ -315,12 +326,14 @@ class KafkaEventPublisher:
             return topic
 
         try:
-            namespaced_topic = self._tenant_context.resolve_kafka_topic(topic, tenant_id)
+            namespaced_topic = self._tenant_context.resolve_kafka_topic(
+                topic, tenant_id
+            )
             log.debug(
                 "Resolved Kafka topic with tenant namespace",
                 original_topic=topic,
                 namespaced_topic=namespaced_topic,
-                tenant=tenant_id
+                tenant=tenant_id,
             )
             return namespaced_topic
         except Exception as e:
@@ -328,7 +341,7 @@ class KafkaEventPublisher:
                 "Failed to resolve tenant topic, using original",
                 topic=topic,
                 tenant=tenant_id,
-                error=str(e)
+                error=str(e),
             )
             return topic
 
@@ -385,15 +398,18 @@ class KafkaEventPublisher:
             producer = self._get_producer()
             message_key = f"{dag_id}"
 
-            message_value = json.dumps({
-                "data": data,
-                "status": status,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "correlation_id": trace_id,
-                "tenant_id": tenant_id,  # Include tenant in message for downstream consumers
-                # Traceability metadata (e.g. partition_key) for downstream consumers
-                "metadata": metadata or {},
-            }, default=str)
+            message_value = json.dumps(
+                {
+                    "data": data,
+                    "status": status,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "correlation_id": trace_id,
+                    "tenant_id": tenant_id,  # Include tenant in message for downstream consumers
+                    # Traceability metadata (e.g. partition_key) for downstream consumers
+                    "metadata": metadata or {},
+                },
+                default=str,
+            )
 
             # Produce message with callback; librdkafka batches this in the
             # background per linger.ms rather than sending it immediately.
@@ -413,7 +429,7 @@ class KafkaEventPublisher:
                 "Queued data for publish",
                 trace_id=trace_id,
                 topic=resolved_topic,
-                tenant=tenant_id
+                tenant=tenant_id,
             )
             return True
 
@@ -474,10 +490,12 @@ class KafkaEventPublisher:
             # Create event payload
             # Enrich metadata with bundle versioning
             enriched_metadata = metadata or {}
-            enriched_metadata.update({
-                "bundle_name": self.bundle_name,
-                "bundle_version": self.bundle_version,
-            })
+            enriched_metadata.update(
+                {
+                    "bundle_name": self.bundle_name,
+                    "bundle_version": self.bundle_version,
+                }
+            )
 
             event = {
                 "event_type": "data_load",
@@ -563,10 +581,12 @@ class KafkaEventPublisher:
 
             # Enrich metadata with bundle versioning
             enriched_metadata = metadata or {}
-            enriched_metadata.update({
-                "bundle_name": self.bundle_name,
-                "bundle_version": self.bundle_version,
-            })
+            enriched_metadata.update(
+                {
+                    "bundle_name": self.bundle_name,
+                    "bundle_version": self.bundle_version,
+                }
+            )
 
             # Create event payload
             event = {
@@ -690,21 +710,28 @@ class KafkaEventPublisher:
             log.error("Error publishing data quality event", error=str(e))
             return False
 
+    def flush(self, timeout: Optional[int] = None) -> None:
+        """
+        Explicitly flush the Kafka producer buffer, blocking until messages are sent.
+        Logs and swallows exceptions to prevent masking task failures.
+        """
+        if self._producer:
+            try:
+                self._producer.flush(timeout=timeout or KAFKA_FLUSH_TIMEOUT)
+                log.debug("Kafka producer flushed")
+            except Exception as e:
+                log.warning("Error flushing Kafka producer (swallowed)", error=str(e))
+
     def close(self):
         """
         Close the Kafka producer.
 
-        This is the one place that still calls flush() — it's the natural
-        end-of-task/end-of-process batching boundary, ensuring every
-        message queued by publish_* (which no longer blocks per-call) is
-        actually sent before the producer goes away.
+        This is the one place that historically called flush() — it's the natural
+        end-of-task/end-of-process batching boundary. We now delegate to flush().
         """
+        self.flush()
         if self._producer:
-            try:
-                self._producer.flush(timeout=KAFKA_FLUSH_TIMEOUT)
-                log.info("Kafka producer closed")
-            except Exception as e:
-                log.error("Error closing Kafka producer", error=str(e))
+            log.info("Kafka producer closed")
 
 
 # Global instance

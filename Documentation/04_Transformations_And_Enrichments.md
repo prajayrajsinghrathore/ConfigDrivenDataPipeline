@@ -44,7 +44,7 @@ flowchart LR
 - ✅ **50+ Built-in Functions** - Math, string, date, conditional operations
 - ✅ **Safe Execution** - Sandboxed environment prevents code injection
 - ✅ **DoS Protection** - Timeout limits, nesting depth checks, length restrictions
-- ✅ **Vectorized Performance** - Efficient pandas-based evaluation
+- ✅ **Vectorized Performance** - Efficient DuckDB/Polars-based evaluation
 - ✅ **Easy Syntax** - Familiar Excel-like formulas
 
 ---
@@ -521,7 +521,7 @@ flowchart TD
 
 ### Performance Tips
 
-1. **Use vectorized operations** - Formula Engine uses pandas for efficiency
+1. **Use vectorized operations** - Formula Engine uses native SQL compilation for efficiency
    ```yaml
    # ✅ Good: Single formula
    formula: "price * quantity * (1 - discount)"

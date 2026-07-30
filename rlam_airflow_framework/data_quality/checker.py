@@ -2,9 +2,11 @@
 """
 DataQualityChecker: the DQ facade.
 
-Picks the right ValidationEngine (Soda / basic-registry / legacy) for the
-configured pipeline, delegates evaluation to it, and handles the concerns
-that apply regardless of which engine ran: DQ metrics publishing to Kafka.
+Soda 4 is the only supported validation engine. When a pipeline configures
+``soda_checks``, delegates evaluation to ``SodaEngine`` (streams the Parquet
+file through DuckDB, no materialization); otherwise validation is
+skipped. Handles the concerns that apply regardless: DQ metrics publishing
+to Kafka.
 """
 
 import uuid
@@ -15,10 +17,7 @@ import structlog
 from rlam_airflow_framework.kafka_publisher import kafka_publisher
 from rlam_airflow_framework.data_quality.engines import (
     SODA_AVAILABLE,
-    SODA_AVAILABLE,
     SodaEngine,
-        BasicEngine,
-    LegacyEngine,
 )
 
 log = structlog.get_logger(__name__)
@@ -75,6 +74,7 @@ class DataQualityChecker:
                 - results: Dictionary with DQ metrics and check results
         """
         import os
+
         if not os.path.exists(df_path):
             log.warning("File does not exist for data quality checks")
             return df_path, "", self._empty_results()
@@ -94,53 +94,51 @@ class DataQualityChecker:
         }
 
         engine = self._select_engine()
-        results["total_rows"] = 0 # Will be populated by engine
+        results["total_rows"] = 0  # Will be populated by engine
 
-        # Dual validation fallback logic
-        if isinstance(engine, SodaEngine):
-            log.info("Running Soda 4 Contract Validation on Parquet directly")
-            valid_df_path, invalid_df_path, results = engine.run_on_path(df_path, results)
-        else:
-            log.info("Running Legacy Validation Engine (materializing Parquet to Pandas)")
+        if engine is None:
+            log.info(
+                "No soda_checks configured (or Soda 4 unavailable) - "
+                "skipping data quality validation"
+            )
             import duckdb
-            df = duckdb.read_parquet(df_path).df()
-            results["total_rows"] = len(df)
-            
-            valid_df, invalid_df, results = engine.run(df, results)
-            
-            # For legacy, we just return the original df_path as valid, 
-            # and ignore quarantine split for now, since we are moving away from Pandas.
-            # In production, dual-validation phase shouldn't rely on splitting 
-            # because the goal is dropping Pandas.
-            valid_df_path = df_path if len(valid_df) > 0 else ""
-            invalid_df_path = ""
-            
+
+            total_rows_res = duckdb.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{df_path}')"
+            ).fetchone()
+            total_rows = total_rows_res[0] if total_rows_res else 0
+            results["status"] = "skipped"
+            results["total_rows"] = total_rows
+            self._publish_dq_metrics(results)
+            return (df_path if total_rows > 0 else ""), "", results
+
+        log.info("Running Soda 4 Contract Validation on Parquet directly")
+        valid_df_path, invalid_df_path, results = engine.run_on_path(df_path, results)
+
         self._publish_dq_metrics(results)
 
         return valid_df_path, invalid_df_path, results
 
-    def _select_engine(self):
+    def _select_engine(self) -> Optional[SodaEngine]:
         """
         Factory: pick the ValidationEngine for this pipeline's configuration.
+
+        Soda 4 is the only supported engine. Returns None (validation
+        skipped) when no ``soda_checks`` are configured or the soda-core /
+        soda-duckdb packages aren't installed, rather than falling back to
+        a hand-rolled re-implementation of the same checks.
         """
         if not self.soda_checks:
-            log.info("No Soda checks configured, using legacy validation rules")
-            return LegacyEngine(
-                self.source_name,
-                self.quality_gates,
-                self.config.get("validation_rules", []),
+            return None
+
+        if not SODA_AVAILABLE:
+            log.warning(
+                "Soda 4 not available - install soda-core and soda-duckdb "
+                "to run configured soda_checks",
             )
+            return None
 
-        if SODA_AVAILABLE:
-            return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
-            
-        if SODA_AVAILABLE:
-            return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
-
-        log.warning(
-            "Soda Core not available", install_cmd="pip install soda-core-pandas"
-        )
-        return BasicEngine(self.source_name, self.quality_gates, self.soda_checks)
+        return SodaEngine(self.source_name, self.quality_gates, self.soda_checks)
 
     def _empty_results(self) -> Dict[str, Any]:
         """Return empty results structure."""
@@ -219,4 +217,3 @@ def run_data_quality_checks(
     """
     checker = DataQualityChecker(config, dag_id, task_id)
     return checker.run_checks(df_path, destination_table)
-

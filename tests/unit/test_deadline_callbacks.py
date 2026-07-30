@@ -130,8 +130,11 @@ class TestCompositeNotifierRealPayload:
 
     def test_notify_email_disabled_by_default(self, dc):
         notifier = dc.CompositeDeadlineNotifier(topic="pipeline-alerts")
-        with patch.object(
-            dc._plugin_kafka_publisher, "publish_event", return_value=True
-        ), patch.object(notifier, "_email_notifier") as email:
+        with (
+            patch.object(
+                dc._plugin_kafka_publisher, "publish_event", return_value=True
+            ),
+            patch.object(notifier, "_email_notifier") as email,
+        ):
             notifier.notify(dict(REAL_CALLBACK_CONTEXT))
         email.notify.assert_not_called()

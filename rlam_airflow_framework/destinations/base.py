@@ -28,6 +28,9 @@ class LoadContext:
     partition_value: Optional[str] = None
 
 
+LOADER_REGISTRY = {}
+
+
 class DestinationLoader(ABC):
     """
     Strategy interface for loading a DataFrame into one destination type.
@@ -37,6 +40,17 @@ class DestinationLoader(ABC):
     the shared guards, then dispatches to :meth:`_write` polymorphically.
     """
 
+    @classmethod
+    def register(cls, dest_type: str):
+        """Decorator to register a destination loader for a specific type."""
+
+        def decorator(subclass):
+            subclass.dest_type = dest_type
+            LOADER_REGISTRY[dest_type] = subclass
+            return subclass
+
+        return decorator
+
     #: The destination config ``type`` value this loader handles.
     dest_type: ClassVar[str]
 
@@ -44,11 +58,10 @@ class DestinationLoader(ABC):
     #: stored procedure) set this False so an empty frame does not skip them.
     consumes_dataframe: ClassVar[bool] = True
 
-    def load(
-        self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext
-    ) -> str:
+    def load(self, df_path: str, dest_config: Dict[str, Any], ctx: LoadContext) -> str:
         """Template method: shared guards + logging, then delegate to ``_write``."""
         import os
+
         if self.consumes_dataframe:
             if not os.path.exists(df_path):
                 _log.bind(correlation_id=ctx.correlation_id).warning(

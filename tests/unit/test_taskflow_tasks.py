@@ -1,10 +1,13 @@
+# ruff: noqa: E402
+from datetime import datetime
+
 # File: tests/unit/test_taskflow_tasks.py
 """
 Unit tests for taskflow_tasks module.
 
 Tests cover:
 - ingest_data() with rest_api source type
-- ingest_data() with sftp source type  
+- ingest_data() with sftp source type
 - Error handling for unsupported source types
 - URL extraction from config
 - Response format handling
@@ -13,7 +16,7 @@ Tests cover:
 from typing import Any, cast
 
 import pytest
-import pandas as pd
+import polars as pl
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -75,24 +78,33 @@ class TestIngestDataRestApi:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_ingest_rest_api_success(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test successful REST API data ingestion."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        test_data = pd.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
+        test_data = pl.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
         mock_fetcher = mock_get_fetcher.return_value
+
         def mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
+
             if target_path is None:
                 target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
-            test_data.to_parquet(target_path, index=False)
+            test_data.write_parquet(target_path)
             return target_path
+
         mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
@@ -104,7 +116,7 @@ class TestIngestDataRestApi:
         assert Path(result).exists()
 
         # Load and verify the saved DataFrame
-        saved_df = pd.read_parquet(result)
+        saved_df = pl.read_parquet(result)
         assert len(saved_df) == 3
         assert list(saved_df.columns) == ["id", "value"]
 
@@ -118,13 +130,21 @@ class TestIngestDataRestApi:
         assert "correlation_id" in call_args.kwargs
 
         # Verify Kafka events were published
-        assert mock_kafka.publish_pipeline_event.call_count == 2  # start and success
+        assert (
+            mock_kafka.return_value.publish_pipeline_event.call_count == 2
+        )  # start and success
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_ingest_rest_api_with_csv_format(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test REST API ingestion with CSV format."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -134,15 +154,18 @@ class TestIngestDataRestApi:
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        test_data = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
+        test_data = pl.DataFrame({"col1": [1, 2], "col2": [3, 4]})
         mock_fetcher = mock_get_fetcher.return_value
+
         def mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
+
             if target_path is None:
                 target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
-            test_data.to_parquet(target_path, index=False)
+            test_data.write_parquet(target_path)
             return target_path
+
         mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
@@ -159,9 +182,15 @@ class TestIngestDataRestApi:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_ingest_rest_api_default_format(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test REST API ingestion defaults to json when format not specified."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -171,15 +200,18 @@ class TestIngestDataRestApi:
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        test_data = pd.DataFrame({"data": [1, 2, 3]})
+        test_data = pl.DataFrame({"data": [1, 2, 3]})
         mock_fetcher = mock_get_fetcher.return_value
+
         def mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
+
             if target_path is None:
                 target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
-            test_data.to_parquet(target_path, index=False)
+            test_data.write_parquet(target_path)
             return target_path
+
         mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
@@ -197,23 +229,32 @@ class TestIngestDataRestApi:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_ingest_rest_api_empty_dataframe(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test handling of empty DataFrame from REST API."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
+
         def mock_fetch_empty(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
                 target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
-            pd.DataFrame().to_parquet(target_path, index=False)
+            pl.DataFrame().write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = mock_fetch_empty
 
         # Execute
@@ -225,11 +266,11 @@ class TestIngestDataRestApi:
         assert Path(result).exists()
 
         # Load and verify the saved DataFrame is empty
-        saved_df = pd.read_parquet(result)
+        saved_df = pl.read_parquet(result)
         assert len(saved_df) == 0
 
         # Success event should still be published
-        assert mock_kafka.publish_pipeline_event.call_count == 2
+        assert mock_kafka.return_value.publish_pipeline_event.call_count == 2
 
 
 class TestIngestDataSftp:
@@ -237,24 +278,33 @@ class TestIngestDataSftp:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_ingest_sftp_success(
-        self, mock_kafka, mock_get_fetcher, mock_context, sftp_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        sftp_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test successful SFTP data ingestion."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        test_data = pd.DataFrame({"name": ["Alice", "Bob"], "age": [25, 30]})
+        test_data = pl.DataFrame({"name": ["Alice", "Bob"], "age": [25, 30]})
         mock_fetcher = mock_get_fetcher.return_value
+
         def mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
+
             if target_path is None:
                 target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
-            test_data.to_parquet(target_path, index=False)
+            test_data.write_parquet(target_path)
             return target_path
+
         mock_fetcher.fetch.side_effect = mock_fetch
 
         # Execute
@@ -266,7 +316,7 @@ class TestIngestDataSftp:
         assert Path(result).exists()
 
         # Load and verify the saved DataFrame
-        saved_df = pd.read_parquet(result)
+        saved_df = pl.read_parquet(result)
         assert len(saved_df) == 2
 
         # Verify the factory resolved "sftp" and the fetcher was invoked
@@ -282,9 +332,15 @@ class TestIncrementalWatermarkFiltering:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_integer_watermark_filters_numerically_without_mutation(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         import sys
 
@@ -297,17 +353,18 @@ class TestIncrementalWatermarkFiltering:
         }
 
         mock_context.return_value = mock_airflow_context
+
         def _mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
-                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-            df = pd.DataFrame(
-            {"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"]}
-        )
-            df.to_parquet(target_path, index=False)
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            df = pl.DataFrame({"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"]})
+            df.write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         sdk_mock = cast(Any, sys.modules["airflow.sdk"])
@@ -320,17 +377,19 @@ class TestIncrementalWatermarkFiltering:
         finally:
             sdk_mock.Variable = original_variable
 
-        saved_df = pd.read_parquet(cast(str, result))
+        saved_df = pl.read_parquet(cast(str, result))
         assert list(saved_df["id"]) == [4, 5]
         # The column must remain integer — NOT coerced to datetime
-        assert pd.api.types.is_integer_dtype(saved_df["id"]), saved_df["id"].dtype
+        assert saved_df["id"].dtype in (pl.Int64, pl.Int32, pl.Int16, pl.Int8), (
+            saved_df["id"].dtype
+        )
 
 
 class TestIngestDataErrorHandling:
     """Test error handling in ingest_data function."""
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_unsupported_source_type(
         self, mock_kafka, mock_context, rest_api_config, mock_airflow_context
     ):
@@ -339,7 +398,7 @@ class TestIngestDataErrorHandling:
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        
+
         # Change to unsupported type
         rest_api_config["data_source"]["type"] = "database"
 
@@ -349,9 +408,14 @@ class TestIngestDataErrorHandling:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_fetch_failure_publishes_error_event(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
     ):
         """Test that fetch failures publish error events to Kafka."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -366,13 +430,14 @@ class TestIngestDataErrorHandling:
 
         # Verify error event was published
         error_calls = [
-            call for call in mock_kafka.publish_pipeline_event.call_args_list
+            call
+            for call in mock_kafka.return_value.publish_pipeline_event.call_args_list
             if call.kwargs.get("event_type") == "ingestion_failed"
         ]
         assert len(error_calls) == 1
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_missing_endpoint_in_config(
         self, mock_kafka, mock_context, rest_api_config, mock_airflow_context
     ):
@@ -381,7 +446,7 @@ class TestIngestDataErrorHandling:
 
         # Setup mocks
         mock_context.return_value = mock_airflow_context
-        
+
         # Remove endpoint
         del rest_api_config["data_source"]["endpoint"]
 
@@ -395,9 +460,14 @@ class TestConfigValidation:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_url_extraction_from_config(
-        self, mock_kafka, mock_get_fetcher, mock_context, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test that URL is correctly extracted from endpoint field."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
@@ -412,15 +482,18 @@ class TestConfigValidation:
         }
 
         mock_context.return_value = mock_airflow_context
+
         def _mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
-                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-            df = pd.DataFrame({"test": [1]})
-            df.to_parquet(target_path, index=False)
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            df = pl.DataFrame({"test": [1]})
+            df.write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         ingest_data(config)
@@ -431,23 +504,32 @@ class TestConfigValidation:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_correlation_id_generation(
-        self, mock_kafka, mock_get_fetcher, mock_context, rest_api_config, mock_airflow_context, mock_temp_dir
+        self,
+        mock_kafka,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
     ):
         """Test that correlation_id is properly generated and passed."""
         from rlam_airflow_framework.taskflow_tasks import ingest_data
 
         mock_context.return_value = mock_airflow_context
+
         def _mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
-                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-            df = pd.DataFrame({"data": [1]})
-            df.to_parquet(target_path, index=False)
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            df = pl.DataFrame({"data": [1]})
+            df.write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         ingest_data(rest_api_config)
@@ -462,43 +544,58 @@ class TestConfigValidation:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("airflow.sdk.Variable")
-    def test_ingest_data_incremental_watermark_filtering(self, mock_variable, mock_context, tmp_path):
+    def test_ingest_data_incremental_watermark_filtering(
+        self, mock_variable, mock_context, tmp_path
+    ):
         from unittest.mock import MagicMock
+
         mock_context.return_value = {
             "dag": MagicMock(dag_id="test_dag"),
             "task": MagicMock(task_id="test_task"),
-            "run_id": "test_run_123"
+            "run_id": "test_run_123",
         }
         mock_variable.get.return_value = "2024-01-05T00:00:00"
-        
+
         config = {
-            "metadata": {"dag_id": "test_dag", "run_id": "test_run_123", "task_id": "test_task"},
+            "metadata": {
+                "dag_id": "test_dag",
+                "run_id": "test_run_123",
+                "task_id": "test_task",
+            },
             "data_source": {
                 "name": "test",
                 "type": "rest_api",
                 "endpoint": "https://example.com/api/v1/data?ts={{ watermark }}",
-                "response_format": "json"
+                "response_format": "json",
             },
             "incremental": {
                 "enabled": True,
                 "watermark_column": "updated_at",
-                "initial_watermark": "2024-01-01T00:00:00"
-            }
+                "initial_watermark": "2024-01-01T00:00:00",
+            },
         }
-        
-        with patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher") as mock_get_fetcher:
+
+        with patch(
+            "rlam_airflow_framework.taskflow_tasks.get_data_fetcher"
+        ) as mock_get_fetcher:
+
             def _mock_fetch(config, target_path=None, **kwargs):
                 import tempfile
                 import os
-                import pandas as pd
+                import polars as pl
+
                 if target_path is None:
-                    target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-                df = pd.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
-                df.to_parquet(target_path, index=False)
+                    target_path = os.path.join(
+                        tempfile.gettempdir(), "test_data.parquet"
+                    )
+                df = pl.DataFrame({"updated_at": ["2024-01-06T00:00:00"], "id": [1]})
+                df.write_parquet(target_path)
                 return target_path
+
             mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
             from rlam_airflow_framework.taskflow_tasks import ingest_data
+
             ingest_data(config)
 
             # The watermark from the Variable should be used
@@ -510,41 +607,45 @@ class TestConfigValidation:
     @patch("airflow.sdk.Variable")
     def test_load_data_advances_watermark(self, mock_variable, mock_context, tmp_path):
         from unittest.mock import MagicMock
+
         mock_context.return_value = {
             "dag": MagicMock(dag_id="test_dag"),
             "task": MagicMock(task_id="test_task"),
-            "run_id": "test_run_123"
+            "run_id": "test_run_123",
         }
         from rlam_airflow_framework.taskflow_tasks import load_data
-        
-        import pandas as pd
+
+        import polars as pl
+
         # Create a test dataframe with watermark column
-        df = pd.DataFrame({
-            "updated_at": [
-                pd.Timestamp("2024-01-01T00:00:00"),
-                pd.Timestamp("2024-01-10T00:00:00")
-            ],
-            "amount": [100, 200]
-        })
-        
-        df_path = str(tmp_path / "test_load_watermark_test_run_123.parquet")
-        df.to_parquet(df_path)
-        
-        config = {
-            "metadata": {"dag_id": "test_dag", "run_id": "test_run_123", "task_id": "test_task", "data_path": df_path},
-            "destination": {
-                "primary": {"type": "print_logs"}
-            },
-            "incremental": {
-                "enabled": True,
-                "watermark_column": "updated_at"
+        df = pl.DataFrame(
+            {
+                "updated_at": [
+                    datetime.fromisoformat("2024-01-01T00:00:00"),
+                    datetime.fromisoformat("2024-01-10T00:00:00"),
+                ],
+                "amount": [100, 200],
             }
+        )
+
+        df_path = str(tmp_path / "test_load_watermark_test_run_123.parquet")
+        df.write_parquet(df_path)
+
+        config = {
+            "metadata": {
+                "dag_id": "test_dag",
+                "run_id": "test_run_123",
+                "task_id": "test_task",
+                "data_path": df_path,
+            },
+            "destination": {"primary": {"type": "print_logs"}},
+            "incremental": {"enabled": True, "watermark_column": "updated_at"},
         }
-        
+
         res = cast(str, load_data(df_path, config))
 
         assert "Primary: Printed 2 rows to logs" in res
-        
+
         # Verify watermark was updated
         assert mock_variable.set.call_count == 2
         calls = mock_variable.set.call_args_list
@@ -563,7 +664,9 @@ class TestWatermarkSafetyAndPartitionEvents:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("airflow.sdk.Variable")
-    def test_failed_load_does_not_advance_watermark(self, mock_variable, mock_context, tmp_path):
+    def test_failed_load_does_not_advance_watermark(
+        self, mock_variable, mock_context, tmp_path
+    ):
         """3A.2 invariant: a load failure must leave the stored watermark untouched."""
         from rlam_airflow_framework.taskflow_tasks import load_data
 
@@ -573,19 +676,22 @@ class TestWatermarkSafetyAndPartitionEvents:
             "run_id": "test_run_123",
         }
 
-        df = pd.DataFrame({"id": [9, 10], "v": ["i", "j"]})
+        df = pl.DataFrame({"id": [9, 10], "v": ["i", "j"]})
         df_path = str(tmp_path / "wm_fail_test.parquet")
-        df.to_parquet(df_path)
+        df.write_parquet(df_path)
 
         config = {
             "destination": {"primary": {"type": "print_logs"}},
             "incremental": {"enabled": True, "watermark_column": "id"},
         }
 
-        with patch(
-            "rlam_airflow_framework.taskflow_tasks._load_to_destination",
-            side_effect=RuntimeError("destination unavailable"),
-        ), patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher"):
+        with (
+            patch(
+                "rlam_airflow_framework.taskflow_tasks._load_to_destination",
+                side_effect=RuntimeError("destination unavailable"),
+            ),
+            patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher"),
+        ):
             with pytest.raises(RuntimeError, match="destination unavailable"):
                 load_data(df_path, config)
 
@@ -616,7 +722,11 @@ class TestWatermarkSafetyAndPartitionEvents:
         mock_variable.get.side_effect = variable_get
 
         config = {
-            "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/api"},
+            "data_source": {
+                "name": "t",
+                "type": "rest_api",
+                "endpoint": "https://x/api",
+            },
             "incremental": {
                 "enabled": True,
                 "watermark_column": "id",
@@ -625,14 +735,14 @@ class TestWatermarkSafetyAndPartitionEvents:
             },
         }
 
-        with patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher"):
+        with patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher"):
             with pytest.raises(ValueError, match="strict mode"):
                 ingest_data(config)
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("airflow.sdk.Variable")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_non_strict_missing_watermark_full_loads_from_initial(
         self, mock_kafka, mock_get_fetcher, mock_variable, mock_context, mock_temp_dir
     ):
@@ -645,17 +755,18 @@ class TestWatermarkSafetyAndPartitionEvents:
             "run_id": "test_run_123",
         }
         mock_variable.get.return_value = None
+
         def _mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
-                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-            df = pd.DataFrame(
-            {"id": [1, 2], "v": ["a", "b"]}
-        )
-            df.to_parquet(target_path, index=False)
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            df = pl.DataFrame({"id": [1, 2], "v": ["a", "b"]})
+            df.write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         config = {
@@ -679,7 +790,7 @@ class TestWatermarkSafetyAndPartitionEvents:
 
     @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
     @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
-    @patch("rlam_airflow_framework.taskflow_tasks.kafka_publisher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
     def test_partition_key_threaded_into_kafka_event_metadata(
         self, mock_kafka, mock_get_fetcher, mock_context, mock_temp_dir
     ):
@@ -694,21 +805,26 @@ class TestWatermarkSafetyAndPartitionEvents:
             "partition_key": "2026-07-22",
             "partition_date": None,
         }
+
         def _mock_fetch(config, target_path=None, **kwargs):
             import tempfile
             import os
-            import pandas as pd
+            import polars as pl
+
             if target_path is None:
-                target_path = os.path.join(tempfile.gettempdir(), 'test_data.parquet')
-            df = pd.DataFrame(
-            {"id": [1], "event_date": ["2026-07-22"]}
-        )
-            df.to_parquet(target_path, index=False)
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            df = pl.DataFrame({"id": [1], "event_date": ["2026-07-22"]})
+            df.write_parquet(target_path)
             return target_path
+
         mock_get_fetcher.return_value.fetch.side_effect = _mock_fetch
 
         config = {
-            "data_source": {"name": "t", "type": "rest_api", "endpoint": "https://x/data"},
+            "data_source": {
+                "name": "t",
+                "type": "rest_api",
+                "endpoint": "https://x/data",
+            },
             "partition": {"enabled": True, "column": "event_date"},
         }
 
@@ -716,12 +832,104 @@ class TestWatermarkSafetyAndPartitionEvents:
 
         events = {
             c.kwargs["event_type"]: c.kwargs
-            for c in mock_kafka.publish_pipeline_event.call_args_list
+            for c in mock_kafka.return_value.publish_pipeline_event.call_args_list
         }
-        assert events["ingestion_started"]["metadata"] == {"partition_key": "2026-07-22"}
+        assert events["ingestion_started"]["metadata"] == {
+            "partition_key": "2026-07-22"
+        }
         completed_md = events["ingestion_completed"]["metadata"]
         assert completed_md["partition_key"] == "2026-07-22"
         assert completed_md["row_count"] == 1
         # And the fetch itself was partition-scoped via the request param
         call_args = mock_get_fetcher.return_value.fetch.call_args
-        assert call_args.args[0]["request_config"]["params"] == {"event_date": "2026-07-22"}
+        assert call_args.args[0]["request_config"]["params"] == {
+            "event_date": "2026-07-22"
+        }
+
+
+class TestFlushKafkaEventsDecorator:
+    """The decorator is the fix for the atexit-only-flushes-at-worker-exit gap:
+    with execute_tasks_new_python_interpreter=False, a worker runs many task
+    instances per process, so events must drain at each task boundary, not
+    just when the whole worker eventually exits."""
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
+    def test_flushes_after_successful_call(self, mock_get_publisher):
+        from rlam_airflow_framework.taskflow_tasks import flush_kafka_events
+
+        @flush_kafka_events
+        def sample(x):
+            return x * 2
+
+        result = sample(21)
+
+        assert result == 42
+        mock_get_publisher.return_value.flush.assert_called_once()
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
+    def test_flushes_even_when_wrapped_function_raises(self, mock_get_publisher):
+        from rlam_airflow_framework.taskflow_tasks import flush_kafka_events
+
+        @flush_kafka_events
+        def sample():
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            sample()
+
+        mock_get_publisher.return_value.flush.assert_called_once()
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
+    def test_ingest_data_flushes_on_success(
+        self,
+        mock_get_publisher,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+        mock_temp_dir,
+    ):
+        """End-to-end: the real ingest_data task flushes after a successful run."""
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        mock_context.return_value = mock_airflow_context
+
+        def mock_fetch(config, target_path=None, **kwargs):
+            import tempfile
+            import os
+            import polars as pl
+
+            if target_path is None:
+                target_path = os.path.join(tempfile.gettempdir(), "test_data.parquet")
+            pl.DataFrame({"id": [1]}).write_parquet(target_path)
+            return target_path
+
+        mock_get_fetcher.return_value.fetch.side_effect = mock_fetch
+
+        ingest_data(rest_api_config)
+
+        mock_get_publisher.return_value.flush.assert_called_once()
+
+    @patch("rlam_airflow_framework.taskflow_tasks.get_current_context")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_data_fetcher")
+    @patch("rlam_airflow_framework.taskflow_tasks.get_event_publisher")
+    def test_ingest_data_flushes_on_failure(
+        self,
+        mock_get_publisher,
+        mock_get_fetcher,
+        mock_context,
+        rest_api_config,
+        mock_airflow_context,
+    ):
+        """End-to-end: the real ingest_data task still flushes when fetch raises."""
+        from rlam_airflow_framework.taskflow_tasks import ingest_data
+
+        mock_context.return_value = mock_airflow_context
+        mock_get_fetcher.return_value.fetch.side_effect = Exception("Network error")
+
+        with pytest.raises(Exception, match="Network error"):
+            ingest_data(rest_api_config)
+
+        mock_get_publisher.return_value.flush.assert_called_once()

@@ -2,23 +2,23 @@
 """
 Custom serializers for Airflow objects.
 
-Registers pandas DataFrame serialization for XCom exchange between tasks.
+Registers polars DataFrame serialization for XCom exchange between tasks.
 """
 
 from __future__ import annotations
 
 from typing import cast
+import json
 
 try:
     from airflow.utils.module_loading import qualname  # type: ignore[import-not-found]
 except ImportError:
     # Airflow 3
     from airflow.sdk._shared.module_loading import qualname
-    import pandas as pd
     from airflow.sdk.serde import U
 
 
-serializers = ["pandas.DataFrame"]
+serializers = ["polars.dataframe.frame.DataFrame"]
 deserializers = serializers
 
 __version__ = 1
@@ -26,68 +26,61 @@ __version__ = 1
 
 def serialize(o: object) -> tuple[U, str, int, bool]:
     """
-    Serialize pandas DataFrame to JSON for XCom storage.
-    
+    Serialize polars DataFrame to JSON for XCom storage.
+
     Args:
         o: Object to serialize
-        
+
     Returns:
         Tuple of (serialized_data, classname, version, is_serialized)
     """
-    import pandas as pd
-    
-    if not isinstance(o, pd.DataFrame):
+    import polars as pl
+
+    if not isinstance(o, pl.DataFrame):
         return "", "", 0, False
-    
+
     name = qualname(o)
-    
-    # Convert DataFrame to JSON (orient='split' preserves index and column names)
-    # This is more efficient than 'records' for large DataFrames
+
+    # Convert DataFrame to JSON (orient='records')
+    # Using write_json produces a JSON string, we load it back to a dict for Airflow JSON serialization
     data = {
-        "data": o.to_dict(orient='split'),
-        "dtypes": {col: str(dtype) for col, dtype in o.dtypes.items()}
+        "data": json.loads(o.write_json()),
     }
-    
+
     return data, name, __version__, True
 
 
-def deserialize(cls: type, version: int, data: object) -> pd.DataFrame:
+def deserialize(cls: type, version: int, data: object) -> object:
     """
-    Deserialize JSON data back to pandas DataFrame.
-    
+    Deserialize JSON data back to polars DataFrame.
+
     Args:
-        cls: Class type (should be pd.DataFrame)
+        cls: Class type (should be pl.DataFrame)
         version: Serialization version
         data: Serialized data
-        
+
     Returns:
-        Deserialized pandas DataFrame
-        
+        Deserialized polars DataFrame
+
     Raises:
         TypeError: If version incompatible or wrong class
     """
-    import pandas as pd
-    
+    import polars as pl
+
     # Check version compatibility
     if version > __version__:
         raise TypeError(f"serialized {version} of {qualname(cls)} > {__version__}")
-    
-    if cls is not pd.DataFrame:
-        raise TypeError(f"do not know how to deserialize {qualname(cls)}")
-    
-    # Reconstruct DataFrame from split-oriented dict
-    payload = cast(dict, data)
-    df_data = payload["data"]
-    df = pd.DataFrame(**df_data)
 
-    # Restore original dtypes
-    dtypes = payload.get("dtypes", {})
-    for col, dtype_str in dtypes.items():
-        if col in df.columns:
-            try:
-                df[col] = df[col].astype(dtype_str)
-            except Exception:
-                # If dtype conversion fails, keep original
-                pass
-    
+    if cls is not pl.DataFrame:
+        raise TypeError(f"do not know how to deserialize {qualname(cls)}")
+
+    payload = cast(dict, data)
+    df_data = payload.get("data", [])
+
+    # Reconstruct DataFrame
+    if df_data:
+        df = pl.read_json(json.dumps(df_data).encode("utf-8"))
+    else:
+        df = pl.DataFrame()
+
     return df

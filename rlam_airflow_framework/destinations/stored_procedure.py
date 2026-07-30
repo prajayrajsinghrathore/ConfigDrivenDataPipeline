@@ -4,7 +4,7 @@
 import time
 from typing import Any, Dict, List
 
-import pandas as pd
+import polars as pl
 import structlog
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from tenacity import RetryError
@@ -23,6 +23,7 @@ from rlam_airflow_framework.destinations.primitives import (
 _log = structlog.get_logger(__name__)
 
 
+@DestinationLoader.register("stored_procedure")
 class StoredProcedureLoader(DestinationLoader):
     """
     Invoke a Snowflake stored procedure (an action sink, not a bulk load).
@@ -34,7 +35,7 @@ class StoredProcedureLoader(DestinationLoader):
     dest_type = "stored_procedure"
     consumes_dataframe = False
 
-    def _write(self, df, dest_config, ctx):
+    def _write(self, df_path, dest_config, ctx):
         procedure_name = dest_config["procedure"]
         parameters = dest_config.get("parameters", [])
         capture_result = dest_config.get("capture_result", True)
@@ -59,13 +60,13 @@ class StoredProcedureLoader(DestinationLoader):
             try:
                 start_time = time.time()
                 if capture_result:
-                    result_df = hook.get_pandas_df(call_sql)
-                    row_count = len(result_df) if result_df is not None else 0
+                    results = hook.get_records(call_sql)
+                    row_count = len(results) if results else 0
                     logger.info(
                         f"Stored procedure executed successfully: {procedure_name}, "
                         f"result_rows={row_count}, elapsed={time.time() - start_time:.2f}s"
                     )
-                    return result_df if result_df is not None else pd.DataFrame()
+                    return pl.DataFrame(results) if results else pl.DataFrame()
                 hook.run(call_sql)
                 logger.info(
                     f"Stored procedure executed successfully: {procedure_name}, "
@@ -76,7 +77,7 @@ class StoredProcedureLoader(DestinationLoader):
                 if is_transient_snowflake_error(e):
                     logger.warning(f"Transient error calling procedure, may retry: {e}")
                     raise
-                logger.error(f"Stored procedure call failed: {e}", exc_info=True)
+                logger.error(f"Stored procedure call failed: {e}")
                 raise DataLoadError(
                     f"Failed to call stored procedure {procedure_name}: {str(e)}",
                     destination=procedure_name,
@@ -88,9 +89,7 @@ class StoredProcedureLoader(DestinationLoader):
         except (RetryError, *SNOWFLAKE_TRANSIENT_ERRORS) as e:
             # snowflake_retry sets reraise=True (see snowflake_table.py's
             # equivalent branch for why RetryError alone isn't enough here).
-            logger.error(
-                "All retry attempts exhausted for procedure call", exc_info=True
-            )
+            logger.error("All retry attempts exhausted for procedure call")
             raise TransientDataLoadError(
                 f"Failed to call stored procedure after {DEFAULT_RETRY_ATTEMPTS} attempts",
                 destination=procedure_name,

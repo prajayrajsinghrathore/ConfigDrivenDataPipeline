@@ -2,20 +2,11 @@
 """
 Factory for resolving a ``data_source.type`` string to a DataFetcher instance.
 
-Adding a new source = add a fetcher class + register it here; call sites
+Adding a new source = add a fetcher class + register it; call sites
 (e.g. ``taskflow_tasks.ingest_data``) never branch on source type themselves.
 """
 
-from typing import Dict, Type
-
-from rlam_airflow_framework.data_fetchers.base import DataFetcher
-from rlam_airflow_framework.data_fetchers.http import HttpFetcher
-from rlam_airflow_framework.data_fetchers.sftp import SftpFetcher
-
-FETCHER_REGISTRY: Dict[str, Type[DataFetcher]] = {
-    "rest_api": HttpFetcher,
-    "sftp": SftpFetcher,
-}
+from rlam_airflow_framework.data_fetchers.base import DataFetcher, FETCHER_REGISTRY
 
 
 def get_data_fetcher(source_type: str) -> DataFetcher:

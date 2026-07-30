@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
-import pandas as pd
+import polars as pl
 import structlog
 
 log = structlog.get_logger(__name__)
@@ -59,10 +60,10 @@ class DataFrameStorage:
         filename = f"{task_id}_{run_id}.parquet"
         return self._base_dir / filename
 
-    def save(self, df: pd.DataFrame, task_id: str, run_id: str) -> str:
+    def save(self, df: pl.DataFrame, task_id: str, run_id: str) -> str:
         """Save *df* to a parquet file and return the absolute path."""
         filepath = self.get_path(task_id, run_id)
-        df.to_parquet(filepath, index=False, compression="snappy")
+        df.write_parquet(filepath, compression="snappy")
         log.info(
             f"Saved DataFrame to {filepath}",
             rows=len(df),
@@ -71,9 +72,9 @@ class DataFrameStorage:
         return str(filepath)
 
     @staticmethod
-    def load(filepath: str) -> pd.DataFrame:
+    def load(filepath: str) -> pl.DataFrame:
         """Load a DataFrame from a parquet file."""
-        df = pd.read_parquet(filepath)
+        df = pl.read_parquet(filepath)
         log.info(f"Loaded DataFrame from {filepath}", rows=len(df))
         return df
 
@@ -84,6 +85,44 @@ class DataFrameStorage:
             Path(filepath).unlink(missing_ok=True)
             log.info(f"Cleaned up DataFrame file: {filepath}")
         except Exception as e:
-            log.warning(
-                f"Failed to cleanup DataFrame file: {filepath}", error=str(e)
+            log.warning(f"Failed to cleanup DataFrame file: {filepath}", error=str(e))
+
+    @staticmethod
+    def get_row_count(filepath: str) -> int:
+        """Get row count of a parquet file using DuckDB (out-of-core)."""
+        import duckdb
+
+        try:
+            res = duckdb.query(f"SELECT count(*) FROM '{filepath}'").fetchone()
+            return res[0] if res else 0
+        except Exception as e:
+            log.warning(f"Failed to get row count for {filepath}", error=str(e))
+            return 0
+
+    @staticmethod
+    def apply_watermark_filter(
+        filepath: str, watermark_column: str, watermark_value: Any
+    ) -> None:
+        """Filter a parquet file in-place using DuckDB (out-of-core)."""
+        import duckdb
+        import tempfile
+        import shutil
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
+        os.close(temp_fd)
+
+        val = str(watermark_value).replace("'", "''")
+        try:
+            duckdb.query(
+                f"COPY (SELECT * FROM '{filepath}' WHERE \"{watermark_column}\" > '{val}') TO '{temp_path}' (FORMAT PARQUET)"
             )
+            shutil.move(temp_path, filepath)
+            log.info(
+                "Applied watermark filter via DuckDB",
+                watermark_column=watermark_column,
+                watermark_value=val,
+            )
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e

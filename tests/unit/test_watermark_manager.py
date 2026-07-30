@@ -5,7 +5,7 @@ Unit tests for WatermarkConfig and WatermarkManager.
 
 from unittest.mock import patch
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from rlam_airflow_framework.taskflow.watermark import WatermarkConfig, WatermarkManager
@@ -165,7 +165,7 @@ class TestWatermarkFilterDataframe:
 
     def test_numeric_filter(self):
         wm = self._make_manager("3")
-        df = pd.DataFrame({"id": [1, 2, 3, 4, 5], "val": list("abcde")})
+        df = pl.DataFrame({"id": [1, 2, 3, 4, 5], "val": list("abcde")})
 
         result = wm.filter_dataframe(df)
 
@@ -180,7 +180,7 @@ class TestWatermarkFilterDataframe:
             strict=False,
         )
         wm = WatermarkManager("dag_1", cfg)
-        df = pd.DataFrame({"id": [1, 2, 3]})
+        df = pl.DataFrame({"id": [1, 2, 3]})
 
         result = wm.filter_dataframe(df)
 
@@ -188,7 +188,7 @@ class TestWatermarkFilterDataframe:
 
     def test_no_filter_when_watermark_is_none(self):
         wm = self._make_manager(None)
-        df = pd.DataFrame({"id": [1, 2, 3]})
+        df = pl.DataFrame({"id": [1, 2, 3]})
 
         result = wm.filter_dataframe(df)
 
@@ -205,18 +205,18 @@ class TestWatermarkFilterDataframe:
         wm = WatermarkManager("dag_1", cfg)
         wm._adjusted_watermark = "3"
 
-        df = pd.DataFrame({"id": [1, 2, 3]})
+        df = pl.DataFrame({"id": [1, 2, 3]})
         result = wm.filter_dataframe(df)
 
         assert len(result) == 3
 
     def test_empty_dataframe_returns_empty(self):
         wm = self._make_manager("3")
-        df = pd.DataFrame(columns=["id"])
+        df = pl.DataFrame(schema=["id"])
 
         result = wm.filter_dataframe(df)
 
-        assert result.empty
+        assert result.is_empty()
 
     def test_datetime_filter(self):
         cfg = WatermarkConfig(
@@ -229,11 +229,11 @@ class TestWatermarkFilterDataframe:
         wm = WatermarkManager("dag_1", cfg)
         wm._adjusted_watermark = "2025-07-15"
 
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
-                "ts": pd.to_datetime(
+                "ts": pl.Series(
                     ["2025-07-14", "2025-07-15", "2025-07-16", "2025-07-17"]
-                ),
+                ).str.to_datetime(),
                 "val": [1, 2, 3, 4],
             }
         )
@@ -263,7 +263,7 @@ class TestWatermarkUpdate:
         )
         wm = WatermarkManager("dag_1", cfg)
 
-        df = pd.DataFrame({"id": [10, 20, 30]})
+        df = pl.DataFrame({"id": [10, 20, 30]})
         wm.update(df)
 
         mock_variable_cls.set.assert_any_call("dag_1.high_watermark", "30")
@@ -280,7 +280,7 @@ class TestWatermarkUpdate:
         )
         wm = WatermarkManager("dag_1", cfg)
 
-        df = pd.DataFrame({"id": [10, 20, 30]})
+        df = pl.DataFrame({"id": [10, 20, 30]})
         wm.update(df)
 
         mock_variable_cls.set.assert_not_called()
@@ -296,7 +296,7 @@ class TestWatermarkUpdate:
         )
         wm = WatermarkManager("dag_1", cfg)
 
-        df = pd.DataFrame(columns=["id"])
+        df = pl.DataFrame(schema=["id"])
         wm.update(df)
 
         mock_variable_cls.set.assert_not_called()
@@ -312,7 +312,7 @@ class TestWatermarkUpdate:
         )
         wm = WatermarkManager("dag_1", cfg)
 
-        df = pd.DataFrame({"id": [1, 2, 3]})
+        df = pl.DataFrame({"id": [1, 2, 3]})
         wm.update(df)
 
         mock_variable_cls.set.assert_not_called()

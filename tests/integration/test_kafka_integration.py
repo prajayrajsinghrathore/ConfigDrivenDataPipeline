@@ -30,7 +30,7 @@ def check_kafka_connection(bootstrap_servers="127.0.0.1:9092", retries=5):
     """
     if not HAS_CONFLUENT_KAFKA:
         return False
-    
+
     for attempt in range(retries):
         try:
             admin = AdminClient({"bootstrap.servers": bootstrap_servers})
@@ -143,28 +143,32 @@ class TestKafkaProducerConsumer:
         for attempt in range(3):
             delivery_result.clear()
             delivery_done.clear()
-            
+
             producer.produce(
                 topic=test_topic,
                 key="test-key".encode("utf-8"),
                 value=json.dumps(message).encode("utf-8"),
                 callback=delivery_callback,
             )
-            
+
             # Flush to send messages
             producer.flush(timeout=10)
-            
+
             # Wait for callback to complete
             callback_fired = delivery_done.wait(timeout=5)
-            
+
             if callback_fired and "error" not in delivery_result:
                 break
-            
+
             if attempt < 2:
                 time.sleep(1)  # Wait before retry
-        
-        assert callback_fired, "Delivery callback was not invoked - Kafka may be unavailable"
-        assert "error" not in delivery_result, f"Delivery error: {delivery_result.get('error')}"
+
+        assert callback_fired, (
+            "Delivery callback was not invoked - Kafka may be unavailable"
+        )
+        assert "error" not in delivery_result, (
+            f"Delivery error: {delivery_result.get('error')}"
+        )
         assert delivery_result.get("topic") == test_topic
         partition = delivery_result.get("partition")
         offset = delivery_result.get("offset")
@@ -201,7 +205,9 @@ class TestKafkaProducerConsumer:
                     continue  # Skip malformed messages
             time.sleep(0.5)
 
-        assert found_message is not None, f"Did not find our message with id={unique_id}"
+        assert found_message is not None, (
+            f"Did not find our message with id={unique_id}"
+        )
         assert found_message["id"] == unique_id
         assert found_message["value"] == "test-value"
 
@@ -248,12 +254,15 @@ class TestKafkaPublisher:
             from rlam_airflow_framework.kafka_publisher import KafkaEventPublisher
             from datetime import datetime
 
-            publisher = KafkaEventPublisher()
-            # Use invalid bootstrap server
-            publisher.bootstrap_servers = "invalid:9999"
-            publisher._producer = None  # Reset to reinitialize with new servers
+            from confluent_kafka import KafkaException, KafkaError
+            from unittest.mock import MagicMock
 
-            # Should handle gracefully and return False
+            publisher = KafkaEventPublisher()
+            publisher.bootstrap_servers = "127.0.0.1:9092"
+            
+            # Mock _get_producer to throw KafkaException
+            publisher._get_producer = MagicMock(side_effect=KafkaException(KafkaError(KafkaError._TRANSPORT)))
+
             result = publisher.publish_pipeline_event(
                 event_type="test_event",
                 dag_id="test_dag",
@@ -264,7 +273,6 @@ class TestKafkaPublisher:
                 topic="pipeline-events",
             )
 
-            # Should return False due to connection error
             assert result is False
         except ImportError:
             pytest.skip("KafkaEventPublisher not available")
@@ -301,7 +309,7 @@ class TestKafkaTopics:
             except Exception as e:
                 last_error = e
                 time.sleep(2)
-        
+
         pytest.fail(f"Could not list topics after 3 attempts: {last_error}")
 
     def test_can_create_topic(self, admin_client):

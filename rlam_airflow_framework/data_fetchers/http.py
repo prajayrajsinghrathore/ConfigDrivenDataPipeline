@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import pandas as pd
+import polars as pl
 import duckdb  # type: ignore
 import structlog
 
@@ -64,6 +64,7 @@ def _create_retry_session(
     return session
 
 
+@DataFetcher.register("rest_api")
 class HttpFetcher(DataFetcher):
     """
     Fetches data from an HTTP API with timeout, retry logic, and proper
@@ -79,7 +80,10 @@ class HttpFetcher(DataFetcher):
     """
 
     def fetch(
-        self, config: Dict[str, Any], correlation_id: Optional[str] = None, target_path: Optional[Path] = None
+        self,
+        config: Dict[str, Any],
+        correlation_id: Optional[str] = None,
+        target_path: Optional[Path] = None,
     ) -> Path:
         if not target_path:
             raise ValueError("target_path is required for out-of-core fetching")
@@ -118,9 +122,12 @@ class HttpFetcher(DataFetcher):
         try:
             start_time = time.time()
             with session.get(
-                url, headers=request_headers, params=params, timeout=timeout, stream=True
+                url,
+                headers=request_headers,
+                params=params,
+                timeout=timeout,
+                stream=True,
             ) as response:
-                
                 # Raise for bad status codes
                 response.raise_for_status()
 
@@ -128,7 +135,7 @@ class HttpFetcher(DataFetcher):
                 first_chunk = response.raw.read(10)
                 if not first_chunk:
                     log.warning("Empty response received", trace_id=trace_id, url=url)
-                    pd.DataFrame().to_parquet(target_path, index=False)
+                    pl.DataFrame().write_parquet(target_path)
                     return target_path
 
                 # Stream to a temp file first
@@ -152,17 +159,27 @@ class HttpFetcher(DataFetcher):
                     )
 
                     if format in ("json", "csv"):
-                        read_func = "read_json_auto" if format == "json" else "read_csv_auto"
+                        read_func = (
+                            "read_json_auto" if format == "json" else "read_csv_auto"
+                        )
                         # DuckDB converts the file to parquet in chunks, keeping RAM flat
-                        duckdb.query(f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)")
-                        log.info("Converted streamed data to Parquet via DuckDB", trace_id=trace_id)
+                        duckdb.query(
+                            f"COPY (SELECT * FROM {read_func}('{temp_raw_path}')) TO '{target_path}' (FORMAT PARQUET)"
+                        )
+                        log.info(
+                            "Converted streamed data to Parquet via DuckDB",
+                            trace_id=trace_id,
+                        )
                     else:
                         # Fallback for XML
                         with open(temp_raw_path, "r", encoding="utf-8") as f:
                             content = f.read()
                         df = parse_content(content, format, trace_id)
-                        df.to_parquet(target_path, index=False, compression="snappy")
-                        log.info("Converted streamed data to Parquet via Pandas fallback", trace_id=trace_id)
+                        df.write_parquet(target_path, compression="snappy")
+                        log.info(
+                            "Converted streamed data to Parquet via Polars fallback",
+                            trace_id=trace_id,
+                        )
 
                     return target_path
 

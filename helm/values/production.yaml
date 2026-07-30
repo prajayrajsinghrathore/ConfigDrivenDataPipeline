@@ -13,10 +13,41 @@ images:
     tag: "3.3.0-custom"
     pullPolicy: IfNotPresent
 
+# CONFIRMED via `helm template` against chart 1.22.0 (2026-07-30): the
+# KubernetesExecutor pod_template_file does NOT source its image from
+# `images.airflow.*` above — that field only feeds the standing
+# Deployments/StatefulSets (scheduler, apiServer, dagProcessor, etc). The
+# generated per-task pod template reads `defaultAirflowRepository`/
+# `defaultAirflowTag` instead, which default to the chart's own
+# `apache/airflow:3.2.2` if left unset. Without this, every task pod
+# KubernetesExecutor spawns would silently run the stock image — no
+# framework code, no deadline notifiers — while every other pod correctly
+# ran the custom image. Must be kept in sync with `images.airflow` above.
+defaultAirflowRepository: rlmsbxdpluksacr.azurecr.io/airflow
+defaultAirflowTag: "3.3.0-custom"
+
 # ==============================================================================
 # EXECUTOR CONFIGURATION
 # ==============================================================================
-executor: "CeleryExecutor"  # For distributed task execution
+# KubernetesExecutor: every task instance runs as its own ephemeral pod,
+# scheduled directly via the K8s API — no Celery workers, no broker. This is
+# why the dataframe-storage shared volume (PERSISTENT VOLUMES below) is
+# mandatory rather than a scale-out edge case: two tasks in the SAME DAG run
+# never share a filesystem by default under this executor, guaranteed, every
+# time, not just when the scheduler happens to pick a different node.
+#
+# Local dev (docker-compose) intentionally stays on CeleryExecutor — this
+# swap is production/AKS-only; see docker/docker-compose.yaml, unchanged.
+executor: "KubernetesExecutor"
+
+# CONFIRMED via `helm template` against chart 1.22.0 (2026-07-30): the
+# chart's bundled Redis defaults to `enabled: true` UNCONDITIONALLY — it is
+# NOT tied to the executor choice, and still rendered a full
+# redis-statefulset/-service/-serviceaccount even with executor set to
+# KubernetesExecutor above. Redis was only ever needed as CeleryExecutor's
+# broker, so it must be disabled explicitly here; nothing does it for you.
+redis:
+  enabled: false
 
 # ==============================================================================
 # DAG BUNDLE CONFIGURATION  (Task 3C.4 — engine/content split)
@@ -37,29 +68,38 @@ config:
     dag_bundle_storage_path: "/opt/airflow/bundle_storage"
 
     # List of DAG bundles to load
+    #
+    # BUG FOUND via `helm template` (2026-07-30): this value gets embedded
+    # by the chart into airflow.cfg, which itself is wrapped in ANOTHER YAML
+    # block scalar inside the ConfigMap template. Multi-line, unindented JSON
+    # here breaks that nested block scalar's indentation rules — YAML parse
+    # error: "could not find expected ':'" at the ConfigMap. Collapsed to a
+    # single line below (JSON/INI don't care about line length; only the
+    # nested-YAML embedding did). Pretty-printed for reference only:
+    #   [
+    #     {
+    #       "name": "framework",
+    #       "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+    #       "kwargs": {
+    #         "path": "/opt/airflow/dags",
+    #         "refresh_interval": 300
+    #       }
+    #     },
+    #     {
+    #       "name": "production_configs",
+    #       "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
+    #       "kwargs": {
+    #         "tracking_ref": "refs/tags/prod-v1.0.0",
+    #         "git_conn_id": "github_configs",
+    #         "subdir": "config",
+    #         "refresh_interval": 300,
+    #         "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/prod-v1.0.0/config/{subdir}"
+    #       }
+    #     }
+    #   ]
     # IMPORTANT: Whitespace on last line matters for configparser
     dag_bundle_config_list: |
-      [
-        {
-          "name": "framework",
-          "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
-          "kwargs": {
-            "path": "/opt/airflow/dags",
-            "refresh_interval": 300
-          }
-        },
-        {
-          "name": "production_configs",
-          "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
-          "kwargs": {
-            "tracking_ref": "refs/tags/prod-v1.0.0",
-            "git_conn_id": "github_configs",
-            "subdir": "config",
-            "refresh_interval": 300,
-            "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/prod-v1.0.0/config/{subdir}"
-          }
-        }
-      ]
+      [{"name": "framework", "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle", "kwargs": {"path": "/opt/airflow/dags", "refresh_interval": 300}}, {"name": "production_configs", "classpath": "airflow.providers.git.bundles.git.GitDagBundle", "kwargs": {"tracking_ref": "refs/tags/prod-v1.0.0", "git_conn_id": "github_configs", "subdir": "config", "refresh_interval": 300, "view_url_template": "https://github.com/prajayrajsinghrathore/AirrflowConfigBundle/tree/prod-v1.0.0/config/{subdir}"}}]
     # ROLLBACK (ROLLBACK_STRATEGY.md): production pins a TAG, not a branch. The
     # config repo's CI (.azure-pipelines/config.yml, which belongs in that repo)
     # tags prod-vX.Y.Z after the schema/unknown-key contract passes; roll back by
@@ -92,27 +132,19 @@ env:
     value: "kafka.default.svc.cluster.local:9092"
   - name: KAFKA_TOPIC_MARKET_DATA
     value: "Market_Data"
-  
-  # Azure DevOps PAT for Git connection (via K8s secret)
-  - name: AZURE_DEVOPS_PAT
-    valueFrom:
-      secretKeyRef:
-        name: airflow-secrets
-        key: AZURE_DEVOPS_PAT
-  
-  # Snowflake connection (via K8s secret)
-  - name: SNOWFLAKE_CONN_ID
-    valueFrom:
-      secretKeyRef:
-        name: airflow-secrets
-        key: snowflake-conn-id
-  
-  # Azure credentials (via K8s secret)
-  - name: AZURE_DATA_LAKE_CONN_ID
-    valueFrom:
-      secretKeyRef:
-        name: airflow-secrets
-        key: azure-data-lake-conn-id
+
+# BUG FOUND via `helm template` (2026-07-30): the chart-wide `env:` list
+# above only accepts {name, value} (values.schema.json restricts it to
+# that shape, no `valueFrom`) — a secretKeyRef-based entry here fails
+# validation outright. Secret-backed env vars need a per-component `env:`
+# list instead (those DO support valueFrom), placed on whichever component
+# actually needs them rather than broadcast to every pod:
+#   - AZURE_DEVOPS_PAT: only the DAG-bundle refresh needs Git auth ->
+#     dagProcessor.env (DAG PROCESSOR CONFIGURATION below).
+#   - SNOWFLAKE_CONN_ID / AZURE_DATA_LAKE_CONN_ID: read via os.getenv() in
+#     rlam_airflow_framework/tenant_context.py, which only ever runs as
+#     part of executing pipeline task code -> workers.kubernetes.env
+#     (WORKER CONFIGURATION below), not scheduler/apiServer/dagProcessor.
 
 # ==============================================================================
 # AIRFLOW CONNECTIONS
@@ -154,19 +186,37 @@ connections:
 # ==============================================================================
 # SECRETS CONFIGURATION
 # ==============================================================================
-# Create K8s secret for Azure DevOps PAT:
+# Create K8s secret with all three keys the env vars above/below reference
+# (ENVIRONMENT VARIABLES, DAG PROCESSOR, WORKER CONFIGURATION sections):
 # kubectl create secret generic airflow-secrets \
-#   --from-literal=AZURE_DEVOPS_PAT=<your-pat-token>
-
+#   --from-literal=AZURE_DEVOPS_PAT=<your-pat-token> \
+#   --from-literal=snowflake-conn-id=<your-snowflake-conn-value> \
+#   --from-literal=azure-data-lake-conn-id=<your-azure-data-lake-conn-value>
+#
+# BUG FOUND via `helm template` (2026-07-30), two issues:
+#  1. `extraSecrets.<name>.data` must be a STRING (templated, base64 values),
+#     per values.schema.json — the nested-map form below failed validation.
+#  2. Only AZURE_DEVOPS_PAT was ever defined here, but the env vars that
+#     reference this secret's `snowflake-conn-id`/`azure-data-lake-conn-id`
+#     keys (DAG PROCESSOR / WORKER CONFIGURATION sections) had nothing to
+#     read — a real deploy would have failed pod startup with
+#     CreateContainerConfigError: key not found in Secret.
 extraSecrets:
   airflow-secrets:
-    data:
+    data: |
       AZURE_DEVOPS_PAT: <base64-encoded-pat>
+      snowflake-conn-id: <base64-encoded-snowflake-conn>
+      azure-data-lake-conn-id: <base64-encoded-azure-data-lake-conn>
 
 # ==============================================================================
 # PERSISTENT VOLUMES
 # ==============================================================================
 # Bundle storage needs persistent volume for caching Git checkouts
+# KNOWN GAP: managed-premium (Azure Disk CSI) is ReadWriteOnce only and does
+# NOT actually support ReadWriteMany below, despite this claiming it — see the
+# KNOWN GAP note further down (near dataframe-storage) for why that matters
+# and what fixed it there. Not fixed here; this PVC is a separate concern
+# (git DAG bundle cache) out of scope for the dataframe-storage change.
 persistence:
   enabled: true
   existingClaim: airflow-bundle-storage-pvc  # Pre-created PVC
@@ -177,9 +227,46 @@ persistence:
 # airflow-dataframe-storage-pvc backs the dataframe-storage volume mounted
 # below (extraVolumes/extraVolumeMounts) at /opt/airflow/tmp/dataframes —
 # the local-parquet inter-task hand-off path TaskFlow tasks use
-# (rlam_airflow_framework/taskflow/storage.py). Must be ReadWriteMany, same
-# as bundle storage, so every worker/scheduler/apiServer pod sees the same
-# files regardless of which pod produced them. Pre-create it the same way:
+# (rlam_airflow_framework/taskflow/storage.py).
+#
+# NOTE: `managed-premium` (Azure Disk CSI) is ReadWriteOnce ONLY — it does
+# NOT support ReadWriteMany despite what an earlier version of this file
+# claimed. Azure Disk is bound to a single node; a second pod scheduling
+# onto a different node cannot attach it. This PVC instead uses the Blob
+# CSI driver in blobfuse2 (fuse) mount mode, authenticated via Workload
+# Identity (no storage account key/SAS anywhere) — see the StorageClass
+# below. Every pod that mounts this volume gets the SAME blob container
+# regardless of node, and DataFrameStorage needs zero code changes since
+# it still just sees a local-looking path.
+#
+# 1. Pre-create the StorageClass (cluster-scoped, one-time):
+#   kubectl create -f - <<EOF
+#   apiVersion: storage.k8s.io/v1
+#   kind: StorageClass
+#   metadata:
+#     name: azureblob-fuse-premium-wi
+#   provisioner: blob.csi.azure.com
+#   parameters:
+#     protocol: fuse2
+#     resourceGroup: <storage-account-resource-group>
+#     storageAccount: <storage-account-name>
+#     containerName: airflow-dataframe-scratch
+#     # TODO(verify): exact key/value for Workload Identity auth against the
+#     # Blob CSI driver version installed on this cluster — recent driver
+#     # releases use `azurestorageauthtype: workloadidentity` +
+#     # `azurestorageidentityclientid: <uami-client-id>`; older releases may
+#     # differ. Confirm against the installed CSI driver's docs before
+#     # applying. This driver-level identity must be granted "Storage Blob
+#     # Data Contributor" on the target storage account/container — a plain
+#     # Azure RBAC role assignment, no networking change required even
+#     # though the storage account lives in a different subscription than AKS.
+#     azurestorageauthtype: workloadidentity
+#     azurestorageidentityclientid: "<workload-identity-client-id>"  # same UAMI as serviceAccount below
+#   reclaimPolicy: Retain
+#   volumeBindingMode: Immediate
+#   EOF
+#
+# 2. Pre-create the PVC against that StorageClass:
 #   kubectl create -f - <<EOF
 #   apiVersion: v1
 #   kind: PersistentVolumeClaim
@@ -187,37 +274,49 @@ persistence:
 #     name: airflow-dataframe-storage-pvc
 #   spec:
 #     accessModes: ["ReadWriteMany"]
-#     storageClassName: managed-premium
+#     storageClassName: azureblob-fuse-premium-wi
 #     resources:
 #       requests:
-#         storage: 50Gi
+#         storage: 50Gi  # Nominal — blob storage doesn't hard-cap like a disk, but the field is required
 #   EOF
+#
+# KNOWN GAP (not fixed here — flagging, not silently changing): the
+# bundle-storage PVC (persistence: block above) has the SAME
+# managed-premium/ReadWriteMany mismatch. It's a separate concern (git DAG
+# bundle cache, not dataframe hand-off) and wasn't in scope for this
+# change, but it has the identical bug and should get the same
+# Blob-CSI-or-equivalent treatment separately.
 
 # Additional volume for bundle storage
 #
-# dataframe-storage is REQUIRED alongside CeleryExecutor: TaskFlow tasks
-# hand DataFrames between each other as local parquet files under
-# rlam_airflow_framework/taskflow/storage.py's AIRFLOW_HOME/tmp/dataframes
-# (only the file path travels through XCom, not the DataFrame itself). With
-# 3 worker replicas and no shared volume for that path, a downstream task
-# scheduled onto a different pod than its upstream task raised
-# FileNotFoundError trying to load a parquet file that only existed on the
-# other pod's local disk. Mounting the SAME ReadWriteMany PVC at that path
-# on every pod (matching the bundle-storage pattern below) makes the
-# hand-off work regardless of which worker picks up which task.
+# dataframe-storage is REQUIRED under KubernetesExecutor (EXECUTOR
+# CONFIGURATION above): TaskFlow tasks hand DataFrames between each other as
+# parquet files under rlam_airflow_framework/taskflow/storage.py's
+# AIRFLOW_HOME/tmp/dataframes (only the file path travels through XCom, not
+# the DataFrame itself). Every task instance gets a fresh pod with an empty
+# filesystem here — this shared volume isn't an edge-case mitigation, it's
+# mandatory for the pipeline to function at all, on every single task
+# boundary, not just when two tasks happen to land on different pods.
+#
+# CONFIRMED via `helm template` (2026-07-30): dataframe-storage does NOT
+# belong in the chart-wide extraVolumes/extraVolumeMounts below. Those only
+# reach the scheduler/apiServer/dagProcessor Deployments — the
+# KubernetesExecutor pod_template_file (what actually runs ingest_data/
+# transform_data/etc, the only things that touch DataFrameStorage) is a
+# SEPARATE render path fed by `workers.kubernetes.extraVolumes`/
+# `extraVolumeMounts` instead. Rendering with only the chart-wide volumes
+# set produced a task pod template with just `logs`+`config` — no
+# dataframe-storage at all — which would have silently reproduced the
+# exact FileNotFoundError this whole change exists to fix. Scoped correctly
+# under WORKER CONFIGURATION below (workers.kubernetes.*), not here.
 extraVolumes:
   - name: bundle-storage
     persistentVolumeClaim:
       claimName: airflow-bundle-storage-pvc
-  - name: dataframe-storage
-    persistentVolumeClaim:
-      claimName: airflow-dataframe-storage-pvc  # Pre-created PVC, ReadWriteMany (see PERSISTENT VOLUMES above)
 
 extraVolumeMounts:
   - name: bundle-storage
     mountPath: /opt/airflow/bundle_storage
-  - name: dataframe-storage
-    mountPath: /opt/airflow/tmp/dataframes
 
 # ==============================================================================
 # SCHEDULER CONFIGURATION
@@ -233,7 +332,11 @@ scheduler:
       memory: "4Gi"
 
   # DAG parsing configuration
-  extraEnv:
+  # BUG FOUND via `helm template` (2026-07-30): `scheduler.extraEnv` isn't a
+  # real key in this chart's schema ("additional properties 'extraEnv' not
+  # allowed") — the correct per-component key is `env` (schema-verified
+  # above to support both plain values and valueFrom).
+  env:
     - name: AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL
       value: "60"  # Scan for DAG files every 60s
     - name: AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL
@@ -281,6 +384,22 @@ scheduler:
           PY
 
 # ==============================================================================
+# DAG PROCESSOR CONFIGURATION
+# ==============================================================================
+# GitDagBundle refresh (production_configs bundle, DAG BUNDLE CONFIGURATION
+# above) runs in the dag-processor component in Airflow 3 — this is where
+# AZURE_DEVOPS_PAT actually needs to land for the `github_configs` git
+# Connection to authenticate against a private repo, not the chart-wide
+# `env:` (ENVIRONMENT VARIABLES above), which doesn't support secretKeyRef.
+dagProcessor:
+  env:
+    - name: AZURE_DEVOPS_PAT
+      valueFrom:
+        secretKeyRef:
+          name: airflow-secrets
+          key: AZURE_DEVOPS_PAT
+
+# ==============================================================================
 # API SERVER CONFIGURATION (Airflow 3 — was `webserver` in 2.x / 3.1.x charts)
 # ==============================================================================
 # Airflow 3 replaced the webserver with the FastAPI API server; the official
@@ -306,10 +425,23 @@ apiServer:
       memory: "2Gi"
 
 # ==============================================================================
-# WORKER CONFIGURATION
+# WORKER CONFIGURATION (KubernetesExecutor: per-task pod template, not a
+# standing worker deployment — `replicas`/`celery.*` from the old
+# CeleryExecutor config are gone; there's no persistent worker fleet to size)
 # ==============================================================================
+# TODO(verify): confirm against this chart version's values.schema.json that
+# `workers.resources` still feeds the generated per-task pod template under
+# KubernetesExecutor (it does in most recent chart releases, since the
+# template is rendered from this same `workers:` block), and that the
+# chart-level `extraVolumes`/`extraVolumeMounts` + `serviceAccount` (PERSISTENT
+# VOLUMES / SERVICE ACCOUNT above) are included in that generated template —
+# i.e. every spawned task pod gets dataframe-storage mounted AND the Workload
+# Identity service account, not just the scheduler/apiServer pods. Validate
+# with `helm template ... | grep -A30 "pod-template-file"` before relying on
+# either. If the chart does NOT propagate these automatically, they need to
+# be set explicitly via `workers.podTemplate`/`config.kubernetes_executor`
+# (pod_template_file override) instead.
 workers:
-  replicas: 3
   resources:
     requests:
       cpu: "1000m"
@@ -317,10 +449,69 @@ workers:
     limits:
       cpu: "2000m"
       memory: "4Gi"
-  
-  # Celery worker configuration
-  celery:
-    instances: 2
+
+  # KubernetesExecutor renders its per-task pod_template_file from
+  # `workers.kubernetes.*`, NOT from the chart-wide extraVolumes/
+  # extraVolumeMounts/serviceAccount (PERSISTENT VOLUMES / SERVICE ACCOUNT
+  # sections above) — confirmed via `helm template`: with only the
+  # chart-wide ones set, the rendered task pod template had no
+  # dataframe-storage volume and ran under a separate, auto-created
+  # "airflow-worker" ServiceAccount that never saw our Workload Identity
+  # annotation. Both must be set here explicitly, scoped to the executor
+  # that actually runs ingest_data/transform_data/etc.
+  kubernetes:
+    extraVolumes:
+      - name: dataframe-storage
+        persistentVolumeClaim:
+          claimName: airflow-dataframe-storage-pvc  # Pre-created PVC, Blob CSI + Workload Identity (see PERSISTENT VOLUMES above)
+    extraVolumeMounts:
+      - name: dataframe-storage
+        mountPath: /opt/airflow/tmp/dataframes
+    # SA annotation alone isn't sufficient for AKS Workload Identity — the
+    # pod itself needs this label or the mutating webhook won't inject the
+    # federated token (SERVICE ACCOUNT section above has the general note).
+    labels:
+      azure.workload.identity/use: "true"
+    serviceAccount:
+      # CONFIRMED via `helm template`: annotations alone rendered NOTHING —
+      # the chart only emits templates/workers/worker-kubernetes-
+      # serviceaccount.yaml (the object that actually carries these
+      # annotations) when `create` is explicitly set. Without it, the pod
+      # silently falls back to the plain worker-serviceaccount.yaml, which
+      # has no annotations at all — the Blob CSI mount would then fail to
+      # authenticate with no obvious error pointing at this being why.
+      create: true
+      annotations:
+        # Same UAMI as the top-level `serviceAccount.annotations` (SERVICE
+        # ACCOUNT above) — task pods use their OWN SA ("airflow-worker"),
+        # which does NOT fall back to the release-wide
+        # `serviceAccount.annotations`, so the Workload Identity annotation
+        # has to be repeated here or the Blob CSI mount can't authenticate
+        # for any task pod.
+        azure.workload.identity/client-id: "<workload-identity-client-id>"
+    # SNOWFLAKE_CONN_ID / AZURE_DATA_LAKE_CONN_ID: read via os.getenv() in
+    # rlam_airflow_framework/tenant_context.py, which only runs as part of
+    # executing pipeline task code — belongs on the task pods specifically,
+    # not the chart-wide `env:` (which doesn't support secretKeyRef anyway;
+    # see ENVIRONMENT VARIABLES above).
+    env:
+      - name: SNOWFLAKE_CONN_ID
+        valueFrom:
+          secretKeyRef:
+            name: airflow-secrets
+            key: snowflake-conn-id
+      - name: AZURE_DATA_LAKE_CONN_ID
+        valueFrom:
+          secretKeyRef:
+            name: airflow-secrets
+            key: azure-data-lake-conn-id
+
+# CONFIRMED via `helm template` against chart 1.22.0 (2026-07-30): the
+# chart's bundled Redis defaults to `enabled: true` unconditionally — see
+# the `redis: {enabled: false}` override under EXECUTOR CONFIGURATION
+# above, which is the actual fix. (An earlier version of this comment
+# assumed the chart auto-disabled Redis based on executor choice; it does
+# not — that assumption was wrong and has been corrected.)
 
 # ==============================================================================
 # TENANT-SPECIFIC RESOURCE POOLS
@@ -423,8 +614,24 @@ serviceAccount:
   create: true
   name: airflow
   annotations:
-    # Azure managed identity for accessing ACR
+    # Azure managed identity for accessing ACR, and (see PERSISTENT VOLUMES
+    # above) the same UAMI used by the Blob CSI driver for the
+    # dataframe-storage volume's Workload Identity auth.
     azure.workload.identity/client-id: "<workload-identity-client-id>"
+
+# The SA annotation above is necessary but NOT sufficient for AKS Workload
+# Identity — every POD that needs the federated token (any pod mounting
+# dataframe-storage: scheduler, apiServer, workers) also needs the label
+# `azure.workload.identity/use: "true"` on the pod itself, or AKS's
+# mutating webhook won't inject AZURE_CLIENT_ID/AZURE_TENANT_ID/
+# AZURE_FEDERATED_TOKEN_FILE and the Blob CSI mount will fail to auth.
+# TODO(verify): confirm the official chart's exact field for this against
+# its values.schema.json — likely `workers.podLabels` / `scheduler.podLabels`
+# / `apiServer.podLabels`, or a single chart-wide `labels:` merged into every
+# pod template depending on chart version. Validate with
+# `helm template ... | grep -A5 "kind: Pod"` before relying on it.
+# labels:
+#   azure.workload.identity/use: "true"
 
 # ==============================================================================
 # MONITORING & OBSERVABILITY

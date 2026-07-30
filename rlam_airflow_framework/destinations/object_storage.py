@@ -18,6 +18,7 @@ from rlam_airflow_framework.destinations.primitives import (
 _log = structlog.get_logger(__name__)
 
 
+@DestinationLoader.register("object_storage")
 class ObjectStorageLoader(DestinationLoader):
     """Write to cloud object storage (supports ``uri`` or ``path`` + ``conn_id``)."""
 
@@ -30,7 +31,9 @@ class ObjectStorageLoader(DestinationLoader):
         file_format = dest_config.get("format", "parquet")
         logger = _log.bind(trace_id=ctx.correlation_id)
 
-        destination_str = uri or (f"{path}@{conn_id}" if path and conn_id else "unknown")
+        destination_str = uri or (
+            f"{path}@{conn_id}" if path and conn_id else "unknown"
+        )
 
         try:
             if uri:
@@ -64,30 +67,38 @@ class ObjectStorageLoader(DestinationLoader):
             import os
 
             local_source = df_path
-            
+
             # If a different format is requested, use DuckDB to convert out-of-core
             if file_format != "parquet":
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_format}")
+                tmp = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f".{file_format}"
+                )
                 tmp.close()
                 local_source = tmp.name
-                
+
                 try:
                     if file_format == "csv":
-                        duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (HEADER, FORMAT CSV)")
+                        duckdb.execute(
+                            f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (HEADER, FORMAT CSV)"
+                        )
                     elif file_format == "json":
-                        duckdb.execute(f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (FORMAT JSON, ARRAY TRUE)")
+                        duckdb.execute(
+                            f"COPY (SELECT * FROM read_parquet('{df_path}')) TO '{local_source}' (FORMAT JSON, ARRAY TRUE)"
+                        )
                     else:
-                        raise ValueError(f"Unsupported format: {file_format}. Supported: parquet, csv, json")
+                        raise ValueError(
+                            f"Unsupported format: {file_format}. Supported: parquet, csv, json"
+                        )
                 except Exception as e:
                     if os.path.exists(local_source):
                         os.remove(local_source)
                     raise e
 
             # Stream out-of-core to the remote object storage
-            with open(local_source, 'rb') as f_in:
-                with run_scoped_path.open('wb') as f_out:
+            with open(local_source, "rb") as f_in:
+                with run_scoped_path.open("wb") as f_out:
                     shutil.copyfileobj(f_in, cast(BinaryIO, f_out))
-                    
+
             if local_source != df_path and os.path.exists(local_source):
                 os.remove(local_source)
 
@@ -101,7 +112,7 @@ class ObjectStorageLoader(DestinationLoader):
         except ValueError:
             raise  # Re-raise validation errors directly
         except Exception as e:
-            logger.error(f"Object storage upload failed: {e}", exc_info=True)
+            logger.error(f"Object storage upload failed: {e}")
             error_cls = (
                 TransientObjectStorageError
                 if is_transient_object_storage_error(e)

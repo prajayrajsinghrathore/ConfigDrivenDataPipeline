@@ -45,6 +45,7 @@ DEFAULT_RETRY_MAX_WAIT = int(os.getenv("DATA_LOADER_RETRY_MAX_WAIT", "10"))
 # These are connection-level errors that may succeed on retry
 try:
     import snowflake.connector.errors as sf_errors
+
     SNOWFLAKE_TRANSIENT_ERRORS = (
         sf_errors.OperationalError,
         sf_errors.DatabaseError,
@@ -62,6 +63,7 @@ except ImportError:
 _object_storage_transient_types = []
 try:
     import botocore.exceptions as _botocore_errors
+
     _object_storage_transient_types += [
         _botocore_errors.EndpointConnectionError,
         _botocore_errors.ConnectTimeoutError,
@@ -72,6 +74,7 @@ except ImportError:
     pass
 try:
     import azure.core.exceptions as _azure_errors
+
     _object_storage_transient_types += [
         _azure_errors.ServiceRequestError,
         _azure_errors.ServiceResponseError,
@@ -168,7 +171,9 @@ def is_transient_snowflake_error(exception: Exception) -> bool:
 # Create retry decorator for Snowflake operations
 snowflake_retry = retry(
     stop=stop_after_attempt(DEFAULT_RETRY_ATTEMPTS),
-    wait=wait_exponential(multiplier=1, min=DEFAULT_RETRY_MIN_WAIT, max=DEFAULT_RETRY_MAX_WAIT),
+    wait=wait_exponential(
+        multiplier=1, min=DEFAULT_RETRY_MIN_WAIT, max=DEFAULT_RETRY_MAX_WAIT
+    ),
     retry=retry_if_exception_type(SNOWFLAKE_TRANSIENT_ERRORS),
     before_sleep=before_sleep_log(_tenacity_logger, logging.WARNING),
     reraise=True,

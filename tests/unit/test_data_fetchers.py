@@ -15,7 +15,10 @@ import paramiko
 import pytest
 import requests
 
-from rlam_airflow_framework.data_fetchers.base import DataFetchError, TransientDataFetchError
+from rlam_airflow_framework.data_fetchers.base import (
+    DataFetchError,
+    TransientDataFetchError,
+)
 from rlam_airflow_framework.data_fetchers.http import HttpFetcher
 from rlam_airflow_framework.data_fetchers.sftp import SftpFetcher
 
@@ -30,7 +33,9 @@ def _http_error_response(status_code):
     response = MagicMock()
     response.status_code = status_code
     response.reason = "error"
-    response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=response)
+    response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        response=response
+    )
     response.__enter__.return_value = response
     return response
 

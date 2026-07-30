@@ -6,6 +6,7 @@ _plan_partitioning / _check_tenant_admission (rlam_airflow_framework/dag_factory
 but runs statically over every pipeline config so a developer sees the
 failure in CI output instead of a DAG Processor warning after merge.
 """
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,13 +41,15 @@ def find_oversubscribed_tenants(
         tenant_id = config.get("metadata", {}).get("tenant")
         if not tenant_id:
             continue
-        aggregate_by_tenant[tenant_id] = (
-            aggregate_by_tenant.get(tenant_id, 0) + declared_concurrency(config)
-        )
+        aggregate_by_tenant[tenant_id] = aggregate_by_tenant.get(
+            tenant_id, 0
+        ) + declared_concurrency(config)
 
     problems = []
     for tenant_id, aggregate in aggregate_by_tenant.items():
-        tenant_pool_slots: Optional[int] = tenants_config.get(tenant_id, {}).get("slots")
+        tenant_pool_slots: Optional[int] = tenants_config.get(tenant_id, {}).get(
+            "slots"
+        )
         if tenant_pool_slots is None:
             continue
         threshold = tenant_pool_slots * multiplier
@@ -61,6 +64,7 @@ def find_oversubscribed_tenants(
 
 # --- synthetic cases: prove the check itself works, independent of what
 # the repo's configs currently look like ---
+
 
 def test_declared_concurrency_non_partitioned_is_one():
     assert declared_concurrency({"partition": {"enabled": False}}) == 1
@@ -77,8 +81,14 @@ def test_declared_concurrency_partitioned_uses_fan_out_and_max_active_runs():
 
 def test_find_oversubscribed_tenants_flags_over_threshold():
     configs = [
-        {"metadata": {"tenant": "acme"}, "partition": {"enabled": True, "max_fan_out": 64}},
-        {"metadata": {"tenant": "acme"}, "partition": {"enabled": True, "max_fan_out": 64}},
+        {
+            "metadata": {"tenant": "acme"},
+            "partition": {"enabled": True, "max_fan_out": 64},
+        },
+        {
+            "metadata": {"tenant": "acme"},
+            "partition": {"enabled": True, "max_fan_out": 64},
+        },
     ]
     tenants_config = {"acme": {"slots": 4}}
 
@@ -89,7 +99,10 @@ def test_find_oversubscribed_tenants_flags_over_threshold():
 
 def test_find_oversubscribed_tenants_allows_within_threshold():
     configs = [
-        {"metadata": {"tenant": "acme"}, "partition": {"enabled": True, "max_fan_out": 4}},
+        {
+            "metadata": {"tenant": "acme"},
+            "partition": {"enabled": True, "max_fan_out": 4},
+        },
     ]
     tenants_config = {"acme": {"slots": 4}}
 
@@ -98,12 +111,16 @@ def test_find_oversubscribed_tenants_allows_within_threshold():
 
 def test_find_oversubscribed_tenants_skips_tenants_without_declared_slots():
     configs = [
-        {"metadata": {"tenant": "unmanaged"}, "partition": {"enabled": True, "max_fan_out": 999}},
+        {
+            "metadata": {"tenant": "unmanaged"},
+            "partition": {"enabled": True, "max_fan_out": 999},
+        },
     ]
     assert find_oversubscribed_tenants(configs, tenants_config={}, multiplier=5) == []
 
 
 # --- integration: run the same check over the repo's real configs ---
+
 
 @pytest.fixture(scope="module")
 def global_settings():
@@ -124,11 +141,17 @@ def data_source_configs():
     return configs
 
 
-def test_repo_tenants_do_not_oversubscribe_their_pools(data_source_configs, global_settings):
-    multiplier = global_settings.get("platform", {}).get("max_tenant_oversubscription", 5)
+def test_repo_tenants_do_not_oversubscribe_their_pools(
+    data_source_configs, global_settings
+):
+    multiplier = global_settings.get("platform", {}).get(
+        "max_tenant_oversubscription", 5
+    )
     tenants_config = global_settings.get("tenants", {})
 
-    problems = find_oversubscribed_tenants(data_source_configs, tenants_config, multiplier)
+    problems = find_oversubscribed_tenants(
+        data_source_configs, tenants_config, multiplier
+    )
 
     assert not problems, (
         "Tenant pipelines collectively over-subscribe their pool beyond the "

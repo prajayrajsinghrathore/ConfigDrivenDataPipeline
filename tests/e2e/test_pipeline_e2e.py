@@ -76,7 +76,9 @@ def auth_headers():
     """JWT Authorization headers; skips when no token can be obtained."""
     headers = get_auth_headers()
     if headers is None:
-        pytest.skip("Airflow JWT token not obtainable (is the stack up with the admin user created?)")
+        pytest.skip(
+            "Airflow JWT token not obtainable (is the stack up with the admin user created?)"
+        )
     return headers
 
 
@@ -140,7 +142,9 @@ class TestPipelineExecution:
         except requests.exceptions.RequestException:
             pytest.skip("Airflow not running")
 
-    def test_trigger_dag_run(self, airflow_api, auth_headers, skip_if_services_unavailable):
+    def test_trigger_dag_run(
+        self, airflow_api, auth_headers, skip_if_services_unavailable
+    ):
         """Test triggering a DAG run."""
         dag_id = _pick_test_dag(airflow_api, auth_headers)
 
@@ -165,7 +169,9 @@ class TestPipelineExecution:
             data = response.json()
             assert data["dag_run_id"] == run_id
 
-    def test_dag_run_completes(self, airflow_api, auth_headers, skip_if_services_unavailable):
+    def test_dag_run_completes(
+        self, airflow_api, auth_headers, skip_if_services_unavailable
+    ):
         """Test that a DAG run completes successfully."""
         dag_id = _pick_test_dag(airflow_api, auth_headers)
         run_id = f"e2e_test_{int(time.time())}"
@@ -222,12 +228,14 @@ class TestKafkaOutput:
         if not docker_services_available.get("kafka", False):
             pytest.skip("Kafka not available")
 
-        consumer = Consumer({
-            "bootstrap.servers": "127.0.0.1:9092",
-            "group.id": f"e2e-test-{int(time.time())}",
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        })
+        consumer = Consumer(
+            {
+                "bootstrap.servers": "127.0.0.1:9092",
+                "group.id": f"e2e-test-{int(time.time())}",
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+            }
+        )
         consumer.subscribe(["pipeline-events"])
         yield consumer
         consumer.close()
@@ -316,12 +324,14 @@ class TestDataQualityPipeline:
         if not docker_services_available.get("kafka", False):
             pytest.skip("Kafka not available")
 
-        consumer = Consumer({
-            "bootstrap.servers": "127.0.0.1:9092",
-            "group.id": f"dq-test-{int(time.time())}",
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        })
+        consumer = Consumer(
+            {
+                "bootstrap.servers": "127.0.0.1:9092",
+                "group.id": f"dq-test-{int(time.time())}",
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+            }
+        )
         consumer.subscribe(["data-quality"])
 
         try:

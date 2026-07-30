@@ -77,12 +77,7 @@ class PartitionInfo:
         No-op if partitioning is disabled, if required fields are missing,
         or if the path already contains partition information.
         """
-        if (
-            not self.enabled
-            or not self.column
-            or not self.value
-            or not path_or_uri
-        ):
+        if not self.enabled or not self.column or not self.value or not path_or_uri:
             return path_or_uri
 
         if f"{self.column}=" in path_or_uri or self.value in path_or_uri:

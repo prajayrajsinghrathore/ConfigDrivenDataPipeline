@@ -34,7 +34,7 @@ class TenantValidationError(Exception):
 class TenantContext:
     """
     Manages tenant context for multi-tenant pipeline execution.
-    
+
     All pipelines must specify a tenant via metadata.tenant field.
     Tenant configuration is loaded from global_settings.yaml.
     """
@@ -42,7 +42,9 @@ class TenantContext:
     # Default connection IDs (fallback when tenant mapping not found)
     DEFAULT_CONNECTIONS = {
         "snowflake": os.getenv("SNOWFLAKE_CONN_ID", "snowflake-default"),
-        "azure_data_lake": os.getenv("AZURE_DATA_LAKE_CONN_ID", "azure_data_lake_default"),
+        "azure_data_lake": os.getenv(
+            "AZURE_DATA_LAKE_CONN_ID", "azure_data_lake_default"
+        ),
         "azure_blob": os.getenv("AZURE_BLOB_CONN_ID", "azure_blob_default"),
     }
 
@@ -63,18 +65,18 @@ class TenantContext:
         """
         self.global_settings = global_settings
         self.tenants = global_settings.get("tenants", {})
-        
+
         if not self.tenants:
-            log.warning("No tenants defined in global_settings - using empty tenant registry")
+            log.warning(
+                "No tenants defined in global_settings - using empty tenant registry"
+            )
 
     def get_defined_tenants(self) -> List[str]:
         """Get list of all defined tenant IDs."""
         return list(self.tenants.keys())
 
     def validate_tenant(
-        self, 
-        config: Dict[str, Any], 
-        config_name: Optional[str] = None
+        self, config: Dict[str, Any], config_name: Optional[str] = None
     ) -> str:
         """
         Validate that a pipeline config has a valid tenant.
@@ -94,7 +96,7 @@ class TenantContext:
         if not metadata:
             raise TenantValidationError(
                 "Missing 'metadata' section. All pipelines must specify metadata.tenant",
-                config_name
+                config_name,
             )
 
         # Check for tenant field
@@ -102,7 +104,7 @@ class TenantContext:
         if not tenant_id:
             raise TenantValidationError(
                 "Missing 'metadata.tenant' field. All pipelines must belong to a tenant",
-                config_name
+                config_name,
             )
 
         # Validate tenant exists in registry
@@ -110,7 +112,7 @@ class TenantContext:
             available_tenants = ", ".join(self.get_defined_tenants()) or "none defined"
             raise TenantValidationError(
                 f"Unknown tenant '{tenant_id}'. Available tenants: {available_tenants}",
-                config_name
+                config_name,
             )
 
         log.debug("Tenant validation passed", tenant=tenant_id, config=config_name)
@@ -131,7 +133,7 @@ class TenantContext:
         """
         if tenant_id not in self.tenants:
             raise TenantValidationError(f"Tenant '{tenant_id}' not found in registry")
-        
+
         return self.tenants[tenant_id]
 
     def get_tenant_owner(self, tenant_id: str) -> str:
@@ -147,15 +149,15 @@ class TenantContext:
     def get_tenant_tags(self, tenant_id: str) -> List[str]:
         """
         Get tags for a tenant (for DAG tagging and UI filtering).
-        
+
         Always includes 'tenant:{tenant_id}' tag plus any custom tenant tags.
         """
         tenant_config = self.get_tenant_config(tenant_id)
         custom_tags = tenant_config.get("tags", [])
-        
+
         # Always include tenant identifier tag
         tenant_tag = f"tenant:{tenant_id}"
-        
+
         return [tenant_tag] + custom_tags
 
     def resolve_connection_id(
@@ -203,7 +205,7 @@ class TenantContext:
                 "Using explicit connection_id from config",
                 connection_id=conn_id,
                 dest_type=dest_type,
-                tenant=tenant_id
+                tenant=tenant_id,
             )
             return conn_id
 
@@ -217,7 +219,7 @@ class TenantContext:
                     "Using tenant connection mapping",
                     connection_id=conn_id,
                     conn_type=conn_type,
-                    tenant=tenant_id
+                    tenant=tenant_id,
                 )
                 return conn_id
 
@@ -231,7 +233,7 @@ class TenantContext:
             "Using default connection",
             connection_id=conn_id,
             conn_type=conn_type,
-            tenant=tenant_id
+            tenant=tenant_id,
         )
         return conn_id
 
@@ -292,14 +294,14 @@ class TenantContext:
 
         # Apply namespace prefix
         namespaced_topic = f"{topic_prefix}.{topic}"
-        
+
         log.debug(
             "Resolved Kafka topic with tenant namespace",
             original_topic=topic,
             namespaced_topic=namespaced_topic,
-            tenant=tenant_id
+            tenant=tenant_id,
         )
-        
+
         return namespaced_topic
 
     def get_dag_id(self, source_name: str, tenant_id: str) -> str:

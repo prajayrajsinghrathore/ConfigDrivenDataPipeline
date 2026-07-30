@@ -13,13 +13,14 @@ Layout:
   never branch on source type themselves.
 """
 
-from rlam_airflow_framework.data_fetchers.base import DataFetcher, DataFetchError
+from rlam_airflow_framework.data_fetchers.base import (
+    DataFetcher,
+    DataFetchError,
+    FETCHER_REGISTRY,
+)
 from rlam_airflow_framework.data_fetchers.http import HttpFetcher
 from rlam_airflow_framework.data_fetchers.sftp import SftpFetcher, SSHHostKeyPolicy
-from rlam_airflow_framework.data_fetchers.factory import (
-    FETCHER_REGISTRY,
-    get_data_fetcher,
-)
+from rlam_airflow_framework.data_fetchers.factory import get_data_fetcher
 
 __all__ = [
     "DataFetcher",

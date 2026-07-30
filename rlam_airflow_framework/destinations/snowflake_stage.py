@@ -20,6 +20,7 @@ from rlam_airflow_framework.destinations.primitives import (
 _log = structlog.get_logger(__name__)
 
 
+@DestinationLoader.register("snowflake_stage")
 class SnowflakeStageLoader(DestinationLoader):
     """Upload the DataFrame as a file to a Snowflake stage via PUT."""
 
@@ -39,6 +40,7 @@ class SnowflakeStageLoader(DestinationLoader):
         logger = _log.bind(trace_id=ctx.correlation_id)
 
         import duckdb
+
         try:
             res = duckdb.query(f"SELECT count(*) FROM '{df_path}'").fetchone()
             row_count = res[0] if res else 0
@@ -56,14 +58,16 @@ class SnowflakeStageLoader(DestinationLoader):
         if not ext:
             ext = f".{file_format}"
         run_scoped_file_name = f"{base_name}_{run_token}{ext}"
-        
+
         needs_cleanup = False
         if file_format == "parquet":
             tmp_file_path = df_path
         else:
             tmp_file_path = os.path.join(tempfile.gettempdir(), run_scoped_file_name)
             duckdb_format = "CSV" if file_format == "csv" else "JSON"
-            duckdb.query(f"COPY (SELECT * FROM '{df_path}') TO '{tmp_file_path}' (FORMAT {duckdb_format})")
+            duckdb.query(
+                f"COPY (SELECT * FROM '{df_path}') TO '{tmp_file_path}' (FORMAT {duckdb_format})"
+            )
             needs_cleanup = True
 
         try:
@@ -85,7 +89,7 @@ class SnowflakeStageLoader(DestinationLoader):
             return f"Loaded to stage {stage_full_path}/{run_scoped_file_name}"
 
         except Exception as e:
-            logger.error(f"Snowflake stage upload failed: {e}", exc_info=True)
+            logger.error(f"Snowflake stage upload failed: {e}")
             error_cls = (
                 TransientDataLoadError
                 if is_transient_snowflake_error(e)

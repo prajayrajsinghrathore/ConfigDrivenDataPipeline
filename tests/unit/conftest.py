@@ -26,19 +26,23 @@ from unittest.mock import MagicMock
 airflow_mock = MagicMock()
 airflow_mock.sdk = MagicMock()
 
+
 def mock_dag_decorator(*args, **kwargs):
     def decorator(func):
         mock_dag = MagicMock()
         mock_dag.dag_id = kwargs.get("dag_id")
         mock_dag.default_args = kwargs.get("default_args", {})
         mock_dag.partial_kwargs = kwargs
-        
+
         # Return mock_dag when decorator wrapper is called
         return lambda *a, **kw: mock_dag
+
     return decorator
+
 
 airflow_mock.sdk.dag = mock_dag_decorator
 airflow_mock.sdk.DAG = MagicMock()
+
 
 class _MockTaskDecorator:
     """Mock ``@task`` decorator that returns the function unchanged.
@@ -52,6 +56,7 @@ class _MockTaskDecorator:
             # Called with arguments: @task(retries=3) or @task.branch(do_xcom_push=False)
             def wrapper(f):
                 return f
+
             return wrapper
         # Called without arguments: @task
         return func
@@ -59,6 +64,7 @@ class _MockTaskDecorator:
     def __getattr__(self, _name: str) -> "_MockTaskDecorator":
         # @task.branch, @task.sensor, @task.python all behave identically
         return self
+
 
 mock_task_decorator = _MockTaskDecorator()
 
@@ -124,16 +130,18 @@ airflow_mock.configuration.conf = MagicMock()
 airflow_mock.utils.email = MagicMock()
 airflow_mock.utils.email.send_email = MagicMock()
 
+
 # Mock qualname function to return the fully qualified class name
 def mock_qualname(obj):
     """Mock implementation of airflow.utils.module_loading.qualname."""
     # Get the class of the object if it's an instance
     if not isinstance(obj, type):
         obj = obj.__class__
-    
-    if hasattr(obj, '__module__') and hasattr(obj, '__name__'):
+
+    if hasattr(obj, "__module__") and hasattr(obj, "__name__"):
         return f"{obj.__module__}.{obj.__name__}"
     return str(obj)
+
 
 airflow_mock.utils.module_loading.qualname = mock_qualname
 
@@ -146,19 +154,31 @@ sys.modules["airflow.sdk.definitions.asset"] = airflow_mock.sdk.definitions.asse
 sys.modules["airflow.sdk.definitions.deadline"] = airflow_mock.sdk.definitions.deadline
 sys.modules["airflow.sdk.definitions.callback"] = airflow_mock.sdk.definitions.callback
 sys.modules["airflow.sdk.definitions.context"] = airflow_mock.sdk.definitions.context
-sys.modules["airflow.sdk.definitions.retry_policy"] = airflow_mock.sdk.definitions.retry_policy
+sys.modules["airflow.sdk.definitions.retry_policy"] = (
+    airflow_mock.sdk.definitions.retry_policy
+)
 sys.modules["airflow.decorators"] = airflow_mock.decorators
 sys.modules["airflow.operators"] = airflow_mock.operators
 sys.modules["airflow.operators.python"] = airflow_mock.operators.python
 sys.modules["airflow.providers"] = airflow_mock.providers
 sys.modules["airflow.providers.snowflake"] = airflow_mock.providers.snowflake
-sys.modules["airflow.providers.snowflake.hooks"] = airflow_mock.providers.snowflake.hooks
-sys.modules["airflow.providers.snowflake.hooks.snowflake"] = airflow_mock.providers.snowflake.hooks.snowflake
+sys.modules["airflow.providers.snowflake.hooks"] = (
+    airflow_mock.providers.snowflake.hooks
+)
+sys.modules["airflow.providers.snowflake.hooks.snowflake"] = (
+    airflow_mock.providers.snowflake.hooks.snowflake
+)
 sys.modules["airflow.providers.standard"] = airflow_mock.providers.standard
-sys.modules["airflow.providers.standard.operators"] = airflow_mock.providers.standard.operators
-sys.modules["airflow.providers.standard.operators.hitl"] = airflow_mock.providers.standard.operators.hitl
+sys.modules["airflow.providers.standard.operators"] = (
+    airflow_mock.providers.standard.operators
+)
+sys.modules["airflow.providers.standard.operators.hitl"] = (
+    airflow_mock.providers.standard.operators.hitl
+)
 sys.modules["airflow.callbacks"] = airflow_mock.callbacks
-sys.modules["airflow.callbacks.callback_requests"] = airflow_mock.callbacks.callback_requests
+sys.modules["airflow.callbacks.callback_requests"] = (
+    airflow_mock.callbacks.callback_requests
+)
 sys.modules["airflow.sdk.serde"] = airflow_mock.sdk.serde
 sys.modules["airflow.task"] = airflow_mock.task
 sys.modules["airflow.task.priority_strategy"] = airflow_mock.task.priority_strategy
@@ -167,16 +187,19 @@ sys.modules["airflow.utils.module_loading"] = airflow_mock.utils.module_loading
 sys.modules["airflow.configuration"] = airflow_mock.configuration
 sys.modules["airflow.utils.email"] = airflow_mock.utils.email
 sys.modules["airflow.sdk.execution_time"] = airflow_mock.sdk.execution_time
-sys.modules["airflow.sdk.execution_time.context"] = airflow_mock.sdk.execution_time.context
+sys.modules["airflow.sdk.execution_time.context"] = (
+    airflow_mock.sdk.execution_time.context
+)
 
 import pytest  # noqa: E402 - must import after airflow modules are mocked above
+
 
 @pytest.fixture(autouse=True)
 def mock_config_loader(monkeypatch):
     from rlam_airflow_framework.config import ConfigLoader
-    
+
     original_load_global = ConfigLoader.load_global_settings
-    
+
     def mock_load_global(self):
         settings = original_load_global(self)
         if "tenants" not in settings:
@@ -184,8 +207,8 @@ def mock_config_loader(monkeypatch):
         settings["tenants"]["test"] = {
             "pool": "test_pool",
             "slots": 10,
-            "connection_prefix": "test_"
+            "connection_prefix": "test_",
         }
         return settings
-        
+
     monkeypatch.setattr(ConfigLoader, "load_global_settings", mock_load_global)

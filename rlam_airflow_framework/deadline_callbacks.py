@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, cast
 
 from airflow.sdk import BaseNotifier
+
 # Task SDK Connection: resolves via the execution API in the SyncCallback/worker
 # context (3.3.0 #65269). airflow.models is DB-isolated there and must not be used.
 from airflow.sdk import Connection
@@ -103,6 +104,7 @@ class DeadlineContext:
             log.warning("Could not parse deadline_time", value=str(value))
             return None
 
+
 # =============================================================================
 # CENTRALIZED TIMEOUT CONFIGURATION
 # =============================================================================
@@ -120,7 +122,7 @@ PLUGIN_KAFKA_FLUSH_TIMEOUT = int(os.getenv("TIMEOUT_KAFKA_FLUSH", "10"))
 class PluginKafkaPublisher:
     """
     Lightweight Kafka publisher for plugin use.
-    
+
     This is a simplified version embedded in the plugin to avoid
     import dependencies on dags/utils. Uses confluent-kafka for
     Kafka 4.x compatibility.
@@ -158,7 +160,11 @@ class PluginKafkaPublisher:
             self._delivery_result = {"success": False, "error": str(err)}
             log.error("Message delivery failed", error=str(err))
         else:
-            self._delivery_result = {"success": True, "topic": msg.topic(), "partition": msg.partition()}
+            self._delivery_result = {
+                "success": True,
+                "topic": msg.topic(),
+                "partition": msg.partition(),
+            }
 
     def _get_producer(self, bootstrap_servers: Optional[str] = None):
         """
@@ -182,10 +188,17 @@ class PluginKafkaPublisher:
                             # Fetch Kafka configuration from Airflow Connection
                             try:
                                 conn = Connection.get("kafka_default")
-                                resolved_bootstrap_servers = conn.extra_dejson.get("bootstrap.servers", "kafka:29092")
-                                security_protocol = conn.extra_dejson.get("security.protocol", "PLAINTEXT")
+                                resolved_bootstrap_servers = conn.extra_dejson.get(
+                                    "bootstrap.servers", "kafka:29092"
+                                )
+                                security_protocol = conn.extra_dejson.get(
+                                    "security.protocol", "PLAINTEXT"
+                                )
                             except Exception as e:
-                                log.warning("Could not fetch kafka_default connection, using defaults", error=str(e))
+                                log.warning(
+                                    "Could not fetch kafka_default connection, using defaults",
+                                    error=str(e),
+                                )
                                 resolved_bootstrap_servers = "kafka:29092"
 
                         config = {
@@ -249,7 +262,7 @@ class PluginKafkaPublisher:
         try:
             # Reset delivery result
             self._delivery_result = None
-            
+
             # Produce message with callback
             producer.produce(
                 topic=topic,
@@ -257,15 +270,19 @@ class PluginKafkaPublisher:
                 value=json.dumps(event).encode("utf-8"),
                 callback=self._delivery_callback,
             )
-            
+
             # Flush and wait for delivery
             producer.flush(timeout=PLUGIN_KAFKA_FLUSH_TIMEOUT)
-            
+
             if self._delivery_result and self._delivery_result.get("success"):
                 log.info("Published event to Kafka", topic=topic, dag_id=dag_id)
                 return True
             else:
-                error_msg = self._delivery_result.get("error", "Unknown error") if self._delivery_result else "No delivery result"
+                error_msg = (
+                    self._delivery_result.get("error", "Unknown error")
+                    if self._delivery_result
+                    else "No delivery result"
+                )
                 log.error("Failed to publish to Kafka", topic=topic, error=error_msg)
                 return False
         except Exception as e:

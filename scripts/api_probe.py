@@ -8,6 +8,7 @@ except ImportError:
 
 import inspect
 
+
 def probe_symbol(module_path, symbol):
     try:
         mod = __import__(module_path, fromlist=[symbol])
@@ -16,20 +17,29 @@ def probe_symbol(module_path, symbol):
     except Exception as e:
         return False, None, str(e)
 
+
 print("--- 1. Import Probe ---")
 symbols = [
-    "CronPartitionTimetable", 
+    "CronPartitionTimetable",
     "CronPartitionedTimetable",
-    "PartitionedAssetTimetable", 
-    "PartitionedAtRuntime", 
-    "RollupMapper", 
-    "FanOutMapper", 
-    "FixedKeyMapper", 
-    "IdentityMapper", 
-    "DayWindow", "WeekWindow", "MonthWindow", "QuarterWindow", "YearWindow", 
-    "WaitForAll", 
-    "MinimumCount", 
-    "StartOfDayMapper", "StartOfWeekMapper", "StartOfMonthMapper", "StartOfQuarterMapper", "StartOfYearMapper"
+    "PartitionedAssetTimetable",
+    "PartitionedAtRuntime",
+    "RollupMapper",
+    "FanOutMapper",
+    "FixedKeyMapper",
+    "IdentityMapper",
+    "DayWindow",
+    "WeekWindow",
+    "MonthWindow",
+    "QuarterWindow",
+    "YearWindow",
+    "WaitForAll",
+    "MinimumCount",
+    "StartOfDayMapper",
+    "StartOfWeekMapper",
+    "StartOfMonthMapper",
+    "StartOfQuarterMapper",
+    "StartOfYearMapper",
 ]
 
 found_symbols = {}
@@ -57,18 +67,21 @@ print("\n--- 3. State-store Probe ---")
 print("Checking airflow.sdk.execution_time.context...")
 try:
     from airflow.sdk.execution_time.context import NEVER_EXPIRE
+
     print(f"[OK] NEVER_EXPIRE exists: {NEVER_EXPIRE}")
 except ImportError as e:
     print(f"[FAIL] NEVER_EXPIRE missing: {e}")
 
 try:
     from airflow.sdk.execution_time.task_runner import get_current_context  # noqa: F401 - availability probe  # pyright: ignore[reportAttributeAccessIssue]
+
     print("[OK] get_current_context exists")
 except ImportError as e:
     print(f"[FAIL] get_current_context missing: {e}")
-    
+
 try:
     from airflow.sdk.definitions.asset import Asset  # noqa: F401 - availability probe
+
     print("[OK] Asset exists")
 except ImportError as e:
     print(f"[FAIL] Asset missing: {e}")
@@ -77,12 +90,13 @@ print("\n--- 4. Config Probe ---")
 # We just print the config
 try:
     from airflow.configuration import conf
+
     try:
         max_keys = conf.getint("scheduler", "partition_mapper_max_downstream_keys")
         print(f"[OK] [scheduler] partition_mapper_max_downstream_keys = {max_keys}")
     except Exception as e:
         print(f"[FAIL] [scheduler] partition_mapper_max_downstream_keys error: {e}")
-        
+
     try:
         timeout = conf.getint("core", "callback_execution_timeout")
         print(f"[OK] [core] callback_execution_timeout = {timeout}")
@@ -94,6 +108,7 @@ except Exception as e:
 print("\n--- 5. FAB Probe ---")
 try:
     from airflow.providers.fab.auth_manager.security_manager import constants
+
     print("[OK] Found FAB constants")
     for name in dir(constants):
         if name.startswith("RESOURCE"):

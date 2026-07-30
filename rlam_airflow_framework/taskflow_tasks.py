@@ -1,4 +1,3 @@
-# File: rlam_airflow_framework/taskflow_tasks.py
 """
 TaskFlow API tasks for Airflow 3.x data pipelines.
 
@@ -24,15 +23,19 @@ Architecture:
   - ``WatermarkManager`` — incremental-load watermark lifecycle
   - ``PartitionInfo`` — partition resolution and path scoping
 """
+import polars as pl
+
+# File: rlam_airflow_framework/taskflow_tasks.py
+
 
 import copy
 
-import pandas as pd
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from pathlib import Path
 import os
 import structlog
+import functools
 
 from airflow.sdk import task, get_current_context
 
@@ -44,7 +47,7 @@ from rlam_airflow_framework.data_quality import (
     create_hitl_quarantine_approval_task,
     process_hitl_approval_result,
 )
-from rlam_airflow_framework.kafka_publisher import kafka_publisher
+from rlam_airflow_framework.taskflow.events import get_event_publisher
 
 from rlam_airflow_framework.taskflow.context import TaskExecutionContext
 from rlam_airflow_framework.taskflow.storage import DataFrameStorage
@@ -71,7 +74,7 @@ except (PermissionError, OSError):
     pass
 
 
-def _save_dataframe(df: pd.DataFrame, task_id: str, run_id: str) -> str:
+def _save_dataframe(df: Any, task_id: str, run_id: str) -> str:
     """Save DataFrame to parquet and return the file path.
 
     .. deprecated:: Use ``DataFrameStorage.save()`` instead.
@@ -81,7 +84,7 @@ def _save_dataframe(df: pd.DataFrame, task_id: str, run_id: str) -> str:
 
     filename = f"{task_id}_{run_id}.parquet"
     filepath = TEMP_DATA_DIR / filename
-    df.to_parquet(filepath, index=False, compression="snappy")
+    df.write_parquet(filepath, compression="snappy")
     log.info(
         f"Saved DataFrame to {filepath}",
         rows=len(df),
@@ -90,12 +93,12 @@ def _save_dataframe(df: pd.DataFrame, task_id: str, run_id: str) -> str:
     return str(filepath)
 
 
-def _load_dataframe(filepath: str) -> pd.DataFrame:
+def _load_dataframe(filepath: str) -> Any:
     """Load DataFrame from parquet file.
 
     .. deprecated:: Use ``DataFrameStorage.load()`` instead.
     """
-    df = pd.read_parquet(filepath)
+    df = pl.read_parquet(filepath)
     log.info(f"Loaded DataFrame from {filepath}", rows=len(df))
     return df
 
@@ -144,9 +147,7 @@ def _task_context() -> Dict[str, Any]:
     return _build_context().raw_context
 
 
-def _resolve_partition_value(
-    config: Dict[str, Any], context: Dict[str, Any]
-) -> tuple:
+def _resolve_partition_value(config: Dict[str, Any], context: Dict[str, Any]) -> tuple:
     """
     Resolve (is_partitioned, partition_column, partition_value).
 
@@ -222,7 +223,30 @@ def partition_scoped_path(
 # =============================================================================
 
 
+
+def flush_kafka_events(func):
+    """
+    Decorator to flush Kafka events at the end of each task execution.
+
+    With execute_tasks_new_python_interpreter=False, a worker process handles
+    many task instances over its lifetime, so the module-level atexit flush
+    only fires when the whole worker exits — not after each task. This
+    decorator drains the buffer at every task boundary instead, whether the
+    task succeeds or raises.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        finally:
+            get_event_publisher().flush()
+
+    return wrapper
+
+
 @task
+@flush_kafka_events
 def ingest_data(config: Dict[str, Any]) -> str:
     """
     Ingest data from configured source (REST API or SFTP).
@@ -267,11 +291,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
             if partition.column not in req_cfg["params"]:
                 req_cfg["params"][partition.column] = partition.value
 
-    if (
-        wm.config.enabled
-        and wm.config.watermark_column
-        and adjusted_watermark
-    ):
+    if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
         if source_type == "rest_api":
             if "request_config" not in data_source_config:
                 data_source_config["request_config"] = {}
@@ -290,9 +310,11 @@ def ingest_data(config: Dict[str, Any]) -> str:
         watermark=adjusted_watermark,
     )
 
+    event_publisher = get_event_publisher()
+
     # Publish ingestion start event
     topic = config.get("event", {}).get("topic", "pipeline-events")
-    kafka_publisher.publish_pipeline_event(
+    event_publisher.publish_pipeline_event(
         dag_id=ctx.dag_id,
         task_id=ctx.task_id,
         event_type="ingestion_started",
@@ -309,46 +331,39 @@ def ingest_data(config: Dict[str, Any]) -> str:
         target_path = storage.get_path(task_id=fetch_task_id, run_id=ctx.run_id)
 
         fetch_result = fetcher.fetch(
-            data_source_config, correlation_id=ctx.correlation_id, target_path=target_path
+            data_source_config,
+            correlation_id=ctx.correlation_id,
+            target_path=target_path,
         )
 
         # We only support Path returns now
         output_path = str(fetch_result)
-        
-        # Post-fetch incremental filtering via DuckDB
+
+        # Post-fetch incremental filtering via DataFrameStorage
         if wm.config.enabled and wm.config.watermark_column and adjusted_watermark:
-            import duckdb  # type: ignore
-            import tempfile
-            
-            temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-            
-            col = wm.config.watermark_column
-            val = str(adjusted_watermark).replace("'", "''")
-            
-            # Filter into a temp file
-            duckdb.query(f"COPY (SELECT * FROM '{output_path}' WHERE \"{col}\" > '{val}') TO '{temp_path}' (FORMAT PARQUET)")
-            
-            # Overwrite original with filtered
-            import shutil
-            shutil.move(temp_path, output_path)
-            log.info("Applied watermark filter via DuckDB", watermark_column=col, watermark_value=val)
-        
-        # Get row count via DuckDB
-        import duckdb  # type: ignore
-        try:
-            res = duckdb.query(f"SELECT count(*) FROM '{output_path}'").fetchone()
-            row_count = res[0] if res else 0
-        except Exception:
-            row_count = 0
-            
+            storage.apply_watermark_filter(
+                filepath=output_path,
+                watermark_column=wm.config.watermark_column,
+                watermark_value=adjusted_watermark,
+            )
+
+        # Get row count via DataFrameStorage
+        row_count = storage.get_row_count(output_path)
+
         if row_count == 0:
-            log.warning("No data fetched from source (or all filtered out)", source_name=source_name)
+            log.warning(
+                "No data fetched from source (or all filtered out)",
+                source_name=source_name,
+            )
         else:
-            log.info("Data ingestion complete", correlation_id=ctx.correlation_id, rows=row_count)
+            log.info(
+                "Data ingestion complete",
+                correlation_id=ctx.correlation_id,
+                rows=row_count,
+            )
 
         # Publish success event
-        kafka_publisher.publish_pipeline_event(
+        event_publisher.publish_pipeline_event(
             dag_id=ctx.dag_id,
             task_id=ctx.task_id,
             event_type="ingestion_completed",
@@ -367,7 +382,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
         )
 
         # Publish failure event
-        kafka_publisher.publish_pipeline_event(
+        event_publisher.publish_pipeline_event(
             dag_id=ctx.dag_id,
             task_id=ctx.task_id,
             event_type="ingestion_failed",
@@ -380,6 +395,7 @@ def ingest_data(config: Dict[str, Any]) -> str:
 
 
 @task
+@flush_kafka_events
 def transform_data(df_path: str, config: Dict[str, Any]) -> str:
     """
     Apply transformations and enrichment to DataFrame.
@@ -393,24 +409,25 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
     """
     ctx = _build_context()
     storage = DataFrameStorage()
+    event_publisher = get_event_publisher()
 
-    # Load DataFrame. Cleanup of df_path is deferred until this task fully
-    # succeeds (see returns below) so a mid-task transient failure lets an
-    # Airflow retry reload the same input file instead of hitting a
-    # FileNotFoundError from a file we already deleted on attempt 1.
-    df = storage.load(df_path)
+    # Out-of-core row count check
+    row_count = storage.get_row_count(df_path)
 
     log.info(
         "Starting data transformation",
         correlation_id=ctx.correlation_id,
-        rows=len(df),
+        rows=row_count,
     )
 
-    if df.empty:
+    if row_count == 0:
         log.warning("Empty DataFrame received for transformation")
-        result_path = storage.save(df, ctx.task_id, ctx.run_id)
+        result_path = storage.get_path(task_id=ctx.task_id, run_id=ctx.run_id)
+        import shutil
+
+        shutil.copy2(df_path, result_path)
         storage.cleanup(df_path)
-        return result_path
+        return str(result_path)
 
     topic = config.get("event", {}).get("topic", "pipeline-events")
 
@@ -420,40 +437,48 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
         from rlam_airflow_framework.engine.planner import PipelinePlanner
         from rlam_airflow_framework.engine.io import ParquetDataSource, ParquetDataSink
         from rlam_airflow_framework.engine.base import SourceSpec, DestinationSpec
-        
+
         ctx_engine = ExecutionContext(
             correlation_id=ctx.correlation_id,
             pipeline_id=ctx.dag_id,
             task_id=ctx.task_id,
             attempt_number=getattr(ctx, "try_number", 1),
-            logger=log
+            logger=log,
         )
-        
+
         source_spec = SourceSpec(path=str(df_path), format="parquet")
-        dest_spec = DestinationSpec(path=str(storage.get_path(ctx.task_id, ctx.run_id)), format="parquet")
-        
+        dest_spec = DestinationSpec(
+            path=str(storage.get_path(ctx.task_id, ctx.run_id)), format="parquet"
+        )
+
         # 1. Validation & Planning
         pipeline_config = PipelineConfig.model_validate(config)
         plan = PipelinePlanner.create_plan(pipeline_config, source_spec, dest_spec)
-        
-        log.info("Execution Plan generated:\n" + plan.explain(), correlation_id=ctx.correlation_id)
-        
+
+        log.info(
+            "Execution Plan generated:\n" + plan.explain(),
+            correlation_id=ctx.correlation_id,
+        )
+
         # 2. Execution
         data_source = ParquetDataSource()
         data = data_source.load(source_spec, ctx_engine)
-        
+
         from rlam_airflow_framework.engine.planner import PlannedStep
+
         for planned_step in plan.steps:
             if isinstance(planned_step, PlannedStep):
-                data = planned_step.transformer.transform(data, planned_step.config, ctx_engine)
+                data = planned_step.transformer.transform(
+                    data, planned_step.config, ctx_engine
+                )
             else:
                 # BackendConversionStep or DuckDBStage
                 data = planned_step.transform(data, ctx_engine)
-            
+
         # 3. Sink
         data_sink = ParquetDataSink()
         write_result = data_sink.save(data, dest_spec, ctx_engine)
-        
+
         # We can't use len(df) directly anymore since it's lazy out-of-core
         row_count = write_result.row_count or 0
 
@@ -465,7 +490,7 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
         )
 
         # Publish success event
-        kafka_publisher.publish_pipeline_event(
+        event_publisher.publish_pipeline_event(
             dag_id=ctx.dag_id,
             task_id=ctx.task_id,
             event_type="transformation_completed",
@@ -483,7 +508,7 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
             "Transformation failed", error=str(e), correlation_id=ctx.correlation_id
         )
 
-        kafka_publisher.publish_pipeline_event(
+        event_publisher.publish_pipeline_event(
             dag_id=ctx.dag_id,
             task_id=ctx.task_id,
             event_type="transformation_failed",
@@ -496,9 +521,8 @@ def transform_data(df_path: str, config: Dict[str, Any]) -> str:
 
 
 @task
-def validate_data_quality(
-    df_path: str, config: Dict[str, Any]
-) -> Dict[str, Any]:
+@flush_kafka_events
+def validate_data_quality(df_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Run data quality checks and split valid/invalid records.
 
@@ -515,7 +539,11 @@ def validate_data_quality(
         config.get("destination", {}).get("primary", {}).get("table", "unknown")
     )
 
-    log.info("Starting data quality validation on staged Parquet", dag_id=ctx.dag_id, df_path=df_path)
+    log.info(
+        "Starting data quality validation on staged Parquet",
+        dag_id=ctx.dag_id,
+        df_path=df_path,
+    )
 
     valid_path, invalid_path, results = run_data_quality_checks(
         df_path=df_path,
@@ -529,17 +557,18 @@ def validate_data_quality(
         "Data quality validation complete",
         status=results.get("status"),
         passed=results.get("passed", 0),
-        failed=results.get("failed", 0)
+        failed=results.get("failed", 0),
     )
 
     # Note: run_data_quality_checks now handles the valid/invalid splitting
     # and saving directly, or returns the original path if no splitting happened.
     # Therefore we don't need to save them here anymore!
-    
+
     return {"valid_path": valid_path, "invalid_path": invalid_path, "results": results}
 
 
 @task.branch(do_xcom_push=False)
+@flush_kafka_events
 def route_dq_results(dq_results: Dict[str, Any], config: Dict[str, Any]) -> str:
     """
     Route pipeline based on data quality results.
@@ -571,6 +600,7 @@ def route_dq_results(dq_results: Dict[str, Any], config: Dict[str, Any]) -> str:
 
 
 @task
+@flush_kafka_events
 def quarantine_invalid_data(
     invalid_df_path: str, dq_results: Dict[str, Any], config: Dict[str, Any]
 ) -> str:
@@ -588,10 +618,6 @@ def quarantine_invalid_data(
     ctx = _build_context()
     storage = DataFrameStorage()
 
-    # Load DataFrame. Cleanup deferred until the quarantine record save
-    # succeeds, so a retry after a mid-task failure can reload invalid_df_path.
-    invalid_df = storage.load(invalid_df_path)
-
     handler = QuarantineHandler(config)
 
     # Extract failed checks
@@ -605,21 +631,24 @@ def quarantine_invalid_data(
         config.get("destination", {}).get("primary", {}).get("table", "unknown")
     )
 
-    quarantine_df = handler.prepare_quarantine_records(
-        invalid_df=invalid_df,
+    result_path = str(storage.get_path(task_id=ctx.task_id, run_id=ctx.run_id))
+
+    count = handler.prepare_quarantine_records(
+        invalid_df_path=invalid_df_path,
+        output_path=result_path,
         source_pipeline=ctx.dag_id,
         source_table=destination_table,
         failed_checks=failed_checks,
     )
 
-    log.info("Prepared quarantine records", count=len(quarantine_df))
+    log.info("Prepared quarantine records", count=count)
 
-    result_path = storage.save(quarantine_df, ctx.task_id, ctx.run_id)
     storage.cleanup(invalid_df_path)
     return result_path
 
 
 @task
+@flush_kafka_events
 def prepare_hitl_approval_context(
     quarantine_df_path: str, config: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -639,23 +668,18 @@ def prepare_hitl_approval_context(
         Approval context for HITL operator
     """
     ctx = _build_context()
-    storage = DataFrameStorage()
-
-    # Load DataFrame
-    quarantine_df = storage.load(quarantine_df_path)
-    # Do NOT cleanup yet - we need the file for process_approval_decision after HITL approval
 
     # Create HITL approval context
     approval_context = create_hitl_quarantine_approval_task(
         dag_id=ctx.dag_id,
-        quarantine_records=quarantine_df,
+        quarantine_df_path=quarantine_df_path,
         config=config,
     )
 
     log.info(
         "Prepared quarantine approval context",
         dag_id=ctx.dag_id,
-        records=len(quarantine_df),
+        records=approval_context.get("quarantine_summary", {}).get("total_records", 0),
         timeout_hours=approval_context["timeout_hours"],
     )
 
@@ -663,6 +687,7 @@ def prepare_hitl_approval_context(
 
 
 @task
+@flush_kafka_events
 def process_approval_decision(
     approval_result: Dict[str, Any],
     quarantine_df_path: str,
@@ -681,9 +706,6 @@ def process_approval_decision(
     """
     ctx = _build_context()
     storage = DataFrameStorage()
-
-    # Load DataFrame
-    quarantine_df = storage.load(quarantine_df_path)
 
     # Process approval result
     # We construct the actual result dict based on the HITL Trigger event payload
@@ -710,23 +732,25 @@ def process_approval_decision(
 
     formatted_result = {"action": action, "notes": notes, "approved_by": approved_by}
 
-    updated_df, action = process_hitl_approval_result(
+    result_path = str(storage.get_path(task_id=ctx.task_id, run_id=ctx.run_id))
+
+    count, action = process_hitl_approval_result(
         approval_result=formatted_result,
-        quarantine_records=quarantine_df,
+        quarantine_df_path=quarantine_df_path,
+        output_path=result_path,
         config=config,
     )
 
     # Cleanup the original quarantine file now that we're done
     storage.cleanup(quarantine_df_path)
 
-    filepath = storage.save(updated_df, ctx.task_id, ctx.run_id)
+    log.info("Processed approval decision", action=action, records=count)
 
-    log.info("Processed approval decision", action=action, records=len(updated_df))
-
-    return filepath
+    return result_path
 
 
 @task
+@flush_kafka_events
 def load_data(
     df_path: str,
     config: Dict[str, Any],
@@ -743,18 +767,12 @@ def load_data(
     """
     ctx = _build_context()
     storage = DataFrameStorage()
+    event_publisher = get_event_publisher()
     partition = PartitionInfo.resolve(config, ctx.raw_context)
     wm = WatermarkManager(ctx.dag_id, WatermarkConfig.from_config(config))
 
     # Avoid materializing the entire dataframe in memory.
-    # Check if data exists. We can use duckdb to query metadata.
-    import duckdb
-    try:
-        row_count_res = duckdb.execute(f"SELECT COUNT(*) FROM read_parquet('{df_path}')").fetchone()
-        row_count = row_count_res[0] if row_count_res else 0
-    except Exception as e:
-        log.warning("Failed to read parquet metadata", error=str(e))
-        row_count = 0
+    row_count = storage.get_row_count(df_path)
 
     log.info(
         "Starting data load",
@@ -819,11 +837,15 @@ def load_data(
         # partition_key rides along so the "data landed" event is traceable to
         # its partition (closes the gap left by the 2A.4.2 ingest-only threading).
         # Fetch schema from duckdb for observability
-        schema_res = duckdb.execute(f"DESCRIBE SELECT * FROM read_parquet('{df_path}')").fetchall()
+        import duckdb
+
+        schema_res = duckdb.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{df_path}')"
+        ).fetchall()
         columns = [row[0] for row in schema_res]
         dtypes = {row[0]: row[1] for row in schema_res}
 
-        kafka_publisher.publish_data(
+        event_publisher.publish_data(
             dag_id=ctx.dag_id,
             data={
                 "row_count": row_count,
@@ -844,11 +866,9 @@ def load_data(
         return summary
 
     except Exception as e:
-        log.error(
-            "Data load failed", error=str(e), correlation_id=ctx.correlation_id
-        )
+        log.error("Data load failed", error=str(e), correlation_id=ctx.correlation_id)
 
-        kafka_publisher.publish_pipeline_event(
+        event_publisher.publish_pipeline_event(
             dag_id=ctx.dag_id,
             task_id=ctx.task_id,
             event_type="load_failed",

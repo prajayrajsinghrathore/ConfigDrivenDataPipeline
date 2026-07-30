@@ -4,6 +4,7 @@ Endpoints:
   GET /items?id=N        -> rows from /srv/data.json with id > N (watermark semantics)
   GET /data?event_date=D -> fixed rows tagged with the requested partition date
 """
+
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs

@@ -5,7 +5,7 @@ Shared pytest fixtures and configuration for Config-Driven Data Pipeline tests.
 import os
 import sys
 import pytest
-import pandas as pd
+import polars as pl
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -74,24 +74,26 @@ def schemas_dir(config_dir) -> Path:
 
 
 @pytest.fixture
-def sample_dataframe() -> pd.DataFrame:
+def sample_dataframe() -> pl.DataFrame:
     """Create a sample DataFrame for testing transformations."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         {
             "id": [1, 2, 3, 4, 5],
             "name": ["Alice", "Bob", "Charlie", "David", "Eve"],
             "price": [10.50, 20.00, 15.75, 30.25, 25.00],
             "quantity": [2, 3, 1, 4, 2],
             "category": ["A", "B", "A", "C", "B"],
-            "timestamp": pd.date_range("2026-01-01", periods=5, freq="D"),
+            "timestamp": pl.Series(
+                ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+            ).str.to_datetime(),
         }
     )
 
 
 @pytest.fixture
-def sample_dataframe_with_nulls() -> pd.DataFrame:
+def sample_dataframe_with_nulls() -> pl.DataFrame:
     """Create a sample DataFrame with null values for data quality testing."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         {
             "id": [1, 2, None, 4, 5],
             "name": ["Alice", None, "Charlie", "David", "Eve"],
@@ -109,9 +111,9 @@ def sample_dataframe_with_nulls() -> pd.DataFrame:
 
 
 @pytest.fixture
-def sample_market_data() -> pd.DataFrame:
+def sample_market_data() -> pl.DataFrame:
     """Create sample market data for pipeline testing."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         {
             "symbol": ["AAPL", "GOOGL", "MSFT", "AMZN", "META"],
             "open": [150.00, 2800.00, 300.00, 3400.00, 330.00],
@@ -253,11 +255,11 @@ def mock_snowflake_hook():
 
     Usage:
         def test_something(mock_snowflake_hook):
-            mock_snowflake_hook.get_pandas_df.return_value = pd.DataFrame(...)
+            mock_snowflake_hook.get_polars_df.return_value = pl.DataFrame(...)
             mock_snowflake_hook.run.return_value = None
     """
     hook = MagicMock()
-    hook.get_pandas_df.return_value = pd.DataFrame()
+    hook.get_polars_df.return_value = pl.DataFrame()
     hook.run.return_value = None
     hook.get_conn.return_value = MagicMock()
     return hook
@@ -271,7 +273,7 @@ def mock_snowflake_hook_with_data():
     Returns a hook that returns sample instrument data.
     """
     hook = MagicMock()
-    hook.get_pandas_df.return_value = pd.DataFrame(
+    hook.get_polars_df.return_value = pl.DataFrame(
         {
             "INSTRUMENT_ID": ["INS001", "INS002", "INS003"],
             "ISIN": ["US0378331005", "US5949181045", "US02079K1079"],
@@ -468,7 +470,7 @@ def mock_soda_scan():
     scan = MagicMock()
     scan.set_scan_definition_name.return_value = None
     scan.set_data_source_name.return_value = None
-    scan.add_pandas_dataframe.return_value = None
+    scan.add_polars_dataframe.return_value = None
     scan.add_sodacl_yaml_str.return_value = None
     scan.execute.return_value = None
     scan.get_scan_results.return_value = {
@@ -488,7 +490,7 @@ def mock_soda_scan_with_failures():
     scan = MagicMock()
     scan.set_scan_definition_name.return_value = None
     scan.set_data_source_name.return_value = None
-    scan.add_pandas_dataframe.return_value = None
+    scan.add_polars_dataframe.return_value = None
     scan.add_sodacl_yaml_str.return_value = None
     scan.execute.return_value = None
     scan.get_scan_results.return_value = {
@@ -537,16 +539,24 @@ def sample_dq_config() -> dict:
 
 
 @pytest.fixture
-def sample_dataframe_for_dq() -> pd.DataFrame:
+def sample_dataframe_for_dq() -> pl.DataFrame:
     """Sample DataFrame for data quality testing with various issues."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         {
             "id": [1, 2, 3, None, 5],
             "name": ["Alice", "Bob", None, "David", "Eve"],
             "email": ["a@test.com", "invalid", "c@test.com", "d@test.com", None],
             "price": [10.0, -5.0, 15.0, 20.0, 25.0],  # -5.0 is invalid
             "status": ["A", "B", "X", "A", "B"],  # X might be invalid
-            "timestamp": pd.date_range("2026-02-01", periods=5, freq="h"),
+            "timestamp": pl.Series(
+                [
+                    "2026-02-01T00:00:00",
+                    "2026-02-01T01:00:00",
+                    "2026-02-01T02:00:00",
+                    "2026-02-01T03:00:00",
+                    "2026-02-01T04:00:00",
+                ]
+            ).str.to_datetime(),
         }
     )
 
@@ -704,7 +714,7 @@ def mock_deadline_context(mock_dag_run):
 
 
 @pytest.fixture
-def sample_quarantine_records() -> pd.DataFrame:
+def sample_quarantine_records() -> pl.DataFrame:
     """
     Create sample quarantine records for HITL testing.
 
@@ -713,7 +723,7 @@ def sample_quarantine_records() -> pd.DataFrame:
     import json
     from datetime import datetime, timezone
 
-    return pd.DataFrame(
+    return pl.DataFrame(
         {
             "quarantine_id": ["q1", "q2", "q3"],
             "source_pipeline": ["test_pipeline", "test_pipeline", "test_pipeline"],

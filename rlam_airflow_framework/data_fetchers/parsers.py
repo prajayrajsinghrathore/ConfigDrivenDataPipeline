@@ -10,9 +10,8 @@ transport.
 
 import json
 import xml.etree.ElementTree as ET
-from io import StringIO
 from typing import Optional, Dict, Any, List, Callable
-import pandas as pd
+import polars as pl
 import structlog
 
 log = structlog.get_logger(__name__)
@@ -34,40 +33,40 @@ def _xml_root_to_records(root: ET.Element) -> List[Dict[str, Any]]:
     return records
 
 
-def parse_json(content: str) -> pd.DataFrame:
+def parse_json(content: str) -> pl.DataFrame:
     if not content or content.isspace():
         log.warning("JSON content is empty")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     data = json.loads(content)
     if data is None:
         log.warning("JSON content is null")
-        return pd.DataFrame()
+        return pl.DataFrame()
     if isinstance(data, list) and len(data) == 0:
         log.warning("JSON content is empty array")
-        return pd.DataFrame()
-    return pd.json_normalize(data)
+        return pl.DataFrame()
+    return pl.DataFrame(data)
 
 
-def parse_csv(content: str) -> pd.DataFrame:
+def parse_csv(content: str) -> pl.DataFrame:
     if not content or content.isspace():
         log.warning("CSV content is empty")
-        return pd.DataFrame()
-    return pd.read_csv(StringIO(content))
+        return pl.DataFrame()
+    return pl.read_csv(content.encode("utf-8"))
 
 
-def parse_xml(content: str) -> pd.DataFrame:
+def parse_xml(content: str) -> pl.DataFrame:
     if not content or content.isspace():
         log.warning("XML content is empty")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     data = _xml_root_to_records(ET.fromstring(content))
     if not data:
         log.warning("No data extracted from XML")
-    return pd.DataFrame(data)
+    return pl.DataFrame(data)
 
 
-PARSERS: Dict[str, Callable[[str], pd.DataFrame]] = {
+PARSERS: Dict[str, Callable[[str], pl.DataFrame]] = {
     "json": parse_json,
     "csv": parse_csv,
     "xml": parse_xml,
@@ -76,7 +75,7 @@ PARSERS: Dict[str, Callable[[str], pd.DataFrame]] = {
 
 def parse_content(
     content: str, format: str, trace_id: Optional[str] = None
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Parse text content according to ``format`` ('json', 'csv', or 'xml').
 
@@ -95,9 +94,9 @@ def parse_content(
         bound_log.error(f"Failed to parse JSON content: {e}")
         raise ValueError(f"Invalid JSON response: {e}") from e
 
-    except pd.errors.EmptyDataError as e:
+    except pl.exceptions.NoDataError as e:
         bound_log.warning(f"Empty data in content: {e}")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     except ET.ParseError as e:
         bound_log.error(f"Failed to parse XML content: {e}")

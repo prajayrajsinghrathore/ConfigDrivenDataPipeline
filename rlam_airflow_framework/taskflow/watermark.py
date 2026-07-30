@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union, cast
 
-import pandas as pd
+import polars as pl
 import structlog
 
 log = structlog.get_logger(__name__)
@@ -88,9 +88,7 @@ class WatermarkManager:
 
         from airflow.sdk import Variable
 
-        current_watermark = Variable.get(
-            f"{self._dag_id}.high_watermark", default=None
-        )
+        current_watermark = Variable.get(f"{self._dag_id}.high_watermark", default=None)
         if current_watermark:
             log.info(
                 "Loaded watermark from Airflow Variable",
@@ -123,7 +121,7 @@ class WatermarkManager:
     # Filter
     # ------------------------------------------------------------------
 
-    def filter_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+    def filter_dataframe(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         Post-fetch filtering: keep only rows whose watermark column value
         exceeds the adjusted watermark.
@@ -134,42 +132,45 @@ class WatermarkManager:
         """
         if not self._cfg.enabled or not self._cfg.watermark_column:
             return df
-        if df.empty:
+        if df.is_empty():
             return df
         if self._adjusted_watermark is None:
             return df
         if self._cfg.watermark_column not in df.columns:
             return df
 
-        col = df[self._cfg.watermark_column]
+        col_name = self._cfg.watermark_column
         wm = cast(Any, self._adjusted_watermark)
-        mask = None
+        dtype = df.schema[col_name]
         comparison = "unknown"
 
         try:
-            mask = cast(Any, pd.to_numeric(col)) > float(wm)
-            comparison = "numeric"
-        except (ValueError, TypeError):
-            try:
-                mask = pd.to_datetime(col) > pd.to_datetime(wm)
-                comparison = "datetime"
-            except Exception:
-                try:
-                    mask = col.astype(str) > str(wm)
-                    comparison = "string (lexicographic — verify ordering!)"
-                except Exception as ex:
-                    log.error(
-                        "Failed to filter DataFrame by watermark", error=str(ex)
-                    )
+            if dtype.is_numeric():
+                df = df.filter(pl.col(col_name) > float(wm))
+                comparison = "numeric"
+            elif dtype in (pl.Date, pl.Datetime, pl.Time):
+                from datetime import datetime
 
-        if mask is not None:
-            df = cast(pd.DataFrame, df[mask])
+                parsed_wm = wm
+                if isinstance(wm, str):
+                    try:
+                        parsed_wm = datetime.fromisoformat(wm.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+                df = df.filter(pl.col(col_name) > parsed_wm)
+                comparison = "datetime"
+            else:
+                df = df.filter(pl.col(col_name).cast(pl.String) > str(wm))
+                comparison = "string (lexicographic — verify ordering!)"
+
             log.info(
                 "Filtered DataFrame by watermark column",
                 comparison=comparison,
                 remaining_rows=len(df),
                 watermark=self._adjusted_watermark,
             )
+        except Exception as ex:
+            log.error("Failed to filter DataFrame by watermark", error=str(ex))
 
         return df
 
@@ -177,7 +178,7 @@ class WatermarkManager:
     # Update
     # ------------------------------------------------------------------
 
-    def update(self, df_or_path: Union[pd.DataFrame, str]) -> None:
+    def update(self, df_or_path: Union[pl.DataFrame, str]) -> None:
         """
         Compute ``max(watermark_column)`` from *df_or_path* and persist to Airflow
         Variables.  No-op when incremental loading is disabled, the column
@@ -185,27 +186,31 @@ class WatermarkManager:
         """
         if not self._cfg.enabled or not self._cfg.watermark_column:
             return
-            
+
         if isinstance(df_or_path, str):
             import duckdb
+
             try:
-                res = duckdb.execute(f"SELECT MAX({self._cfg.watermark_column}) FROM read_parquet('{df_or_path}')").fetchone()
+                res = duckdb.execute(
+                    f"SELECT MAX({self._cfg.watermark_column}) FROM read_parquet('{df_or_path}')"
+                ).fetchone()
                 if not res or res[0] is None:
                     return
                 max_val = res[0]
             except Exception:
                 return
         else:
-            if df_or_path.empty:
+            if df_or_path.is_empty():
                 return
             if self._cfg.watermark_column not in df_or_path.columns:
                 return
             max_val = df_or_path[self._cfg.watermark_column].max()
 
+        from datetime import datetime
         from airflow.sdk import Variable
 
         new_watermark = (
-            max_val.isoformat() if hasattr(max_val, "isoformat") else str(max_val)
+            max_val.isoformat() if isinstance(max_val, datetime) else str(max_val)
         )
 
         Variable.set(f"{self._dag_id}.high_watermark", new_watermark)
@@ -226,9 +231,7 @@ class WatermarkManager:
 
             dt = pendulum.parse(watermark)
             if not isinstance(dt, pendulum.DateTime):
-                raise TypeError(
-                    f"Watermark did not parse to a DateTime: {watermark!r}"
-                )
+                raise TypeError(f"Watermark did not parse to a DateTime: {watermark!r}")
             adjusted_dt = dt.subtract(seconds=self._cfg.lookback)
             adjusted = adjusted_dt.isoformat()
             log.info(

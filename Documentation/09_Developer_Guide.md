@@ -150,7 +150,7 @@ pip install -r requirements.txt
 
 **This will install:**
 - Apache Airflow 3.1.6
-- Pandas, NumPy
+- Polars, DuckDB
 - Soda Core
 - Pytest
 - And all other dependencies

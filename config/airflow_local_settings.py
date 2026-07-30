@@ -47,7 +47,9 @@ else:
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.dev.ConsoleRenderer(),  # Colored output for dev
+        structlog.dev.ConsoleRenderer(
+            exception_formatter=structlog.dev.plain_traceback
+        ),  # Colored output for dev without rich box-drawing characters
     ]
 
 # Configure structlog
@@ -92,13 +94,13 @@ if IS_PRODUCTION:
         "level": "WARNING",
         "propagate": False,
     }
-    
+
     LOGGING_CONFIG["loggers"]["confluent_kafka"] = {
         "handlers": ["task"],
         "level": "ERROR",  # Very noisy otherwise
         "propagate": False,
     }
-    
+
     LOGGING_CONFIG["loggers"]["azure"] = {
         "handlers": ["task"],
         "level": "WARNING",
@@ -117,7 +119,7 @@ REMOTE_TASK_LOG = None
 # ==================================================================================
 # Custom XCom Serializers
 # ==================================================================================
-# Register custom serializers for pandas DataFrames and other objects
+# Register custom serializers for polars DataFrames and other objects
 # This allows DataFrames to be passed between tasks via XCom
 
 # Import the custom DataFrame serializer
@@ -125,10 +127,12 @@ from rlam_airflow_framework import serializers  # noqa: E402
 import airflow.sdk.serde  # noqa: E402
 
 # Register the DataFrame serializer module manually
-airflow.sdk.serde._serializers["pandas.DataFrame"] = serializers
-airflow.sdk.serde._deserializers["pandas.DataFrame"] = serializers
+airflow.sdk.serde._serializers["polars.DataFrame"] = serializers
+airflow.sdk.serde._deserializers["polars.DataFrame"] = serializers
 
 print("[airflow_local_settings] Registered custom DataFrame serializer")
 
 print(f"[airflow_local_settings] Loaded custom logging config for environment: {ENV}")
-print(f"[airflow_local_settings] Structlog output format: {'JSON' if IS_PRODUCTION else 'Console'}")
+print(
+    f"[airflow_local_settings] Structlog output format: {'JSON' if IS_PRODUCTION else 'Console'}"
+)
